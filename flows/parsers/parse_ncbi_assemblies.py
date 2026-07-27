@@ -152,6 +152,11 @@ def process_assembly_report(
     ):
         processed_report["processedAssemblyInfo"]["primaryValue"] = 1
 
+    # Initialize assemblyId from genbankAccession (will be updated later if data_freeze is provided)
+    processed_report["processedAssemblyInfo"]["assemblyId"] = processed_report["processedAssemblyInfo"][
+        "genbankAccession"
+    ]
+
     return processed_report
 
 
