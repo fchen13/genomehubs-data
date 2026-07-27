@@ -499,7 +499,7 @@ def set_data_freeze_default(parsed: dict, data_freeze_name: str):
     """
     for line in parsed.values():
         line["dataFreeze"] = [data_freeze_name]
-        line["assemblyID"] = line["genbankAccession"]
+        line["assemblyId"] = line["genbankAccession"]
 
 
 @task(log_prints=True)
@@ -527,8 +527,8 @@ def process_datafreeze_info(processed_report: dict, data_freeze: dict, config: C
 
         accession_name = line["refseqAccession"] if line["refseqAccession"] in data_freeze else line["genbankAccession"]
 
-        print(f"Renaming assemblyID for {accession_name} to {accession_name}_{data_freeze_name}")
-        line["assemblyID"] = f"{accession_name}_{data_freeze_name}"
+        print(f"Renaming assemblyId for {accession_name} to {accession_name}_{data_freeze_name}")
+        line["assemblyId"] = f"{accession_name}_{data_freeze_name}"
 
 
 @flow(log_prints=True)
