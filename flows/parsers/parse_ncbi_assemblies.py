@@ -131,10 +131,7 @@ def process_assembly_report(
     # Uncomment to filter atypical assemblies
     # if is_atypical_assembly(report, parsed):
     #     return None
-    processed_report = {**report, "processedAssemblyInfo": {
-        "organelle": "nucleus",
-        "versionStatus": version_status
-    }}
+    processed_report = {**report, "processedAssemblyInfo": {"organelle": "nucleus", "versionStatus": version_status}}
     if "pairedAccession" in report:
         if processed_report["pairedAccession"].startswith("GCF_"):
             processed_report["processedAssemblyInfo"]["refseqAccession"] = report["pairedAccession"]
@@ -529,6 +526,8 @@ def process_datafreeze_info(processed_report: dict, data_freeze: dict, config: C
         line["dataFreeze"] = status
 
         accession_name = line["refseqAccession"] if line["refseqAccession"] in data_freeze else line["genbankAccession"]
+
+        print(f"Renaming assemblyID for {accession_name} to {accession_name}_{data_freeze_name}")
         line["assemblyID"] = f"{accession_name}_{data_freeze_name}"
 
 
