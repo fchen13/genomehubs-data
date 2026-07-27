@@ -523,6 +523,7 @@ def process_datafreeze_info(processed_report: dict, data_freeze: dict, config: C
         status = data_freeze.get(line["refseqAccession"]) or data_freeze.get(line["genbankAccession"])
         if not status:
             continue
+        print(line.keys())
         line["dataFreeze"] = status
 
         accession_name = line["refseqAccession"] if line["refseqAccession"] in data_freeze else line["genbankAccession"]
