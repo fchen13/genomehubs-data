@@ -527,10 +527,10 @@ def process_datafreeze_info(processed_report: dict, data_freeze: dict, config: C
     )
     print(f"Processing data freeze info for {data_freeze_name}")
     for accession, line in processed_report.items():
-        refseq = line.get('refseqAccession', 'N/A')
-        genbank = line.get('genbankAccession', 'N/A')
+        refseq = line.get("refseqAccession", "N/A")
+        genbank = line.get("genbankAccession", "N/A")
         print(f"Processing data freeze info for {refseq} - {genbank}")
-        
+
         # Debug: check what's found in data_freeze
         refseq_status = data_freeze.get(refseq)
         genbank_status = data_freeze.get(genbank)
@@ -538,16 +538,16 @@ def process_datafreeze_info(processed_report: dict, data_freeze: dict, config: C
             print(f"  Found via refseqAccession ({refseq}): {refseq_status}")
         if genbank_status:
             print(f"  Found via genbankAccession ({genbank}): {genbank_status}")
-        
+
         status = refseq_status or genbank_status
         if not status:
             print(f"  No match found in data_freeze")
             continue
-        
+
         print(f"  Setting dataFreeze to: {status}")
         # Handle both comma-separated strings and lists
-        if isinstance(status, str) and ',' in status:
-            line["dataFreeze"] = status.split(',')
+        if isinstance(status, str) and "," in status:
+            line["dataFreeze"] = status.split(",")
         else:
             line["dataFreeze"] = status
 
@@ -555,6 +555,65 @@ def process_datafreeze_info(processed_report: dict, data_freeze: dict, config: C
 
         print(f"Renaming assemblyId for {accession_name} to {accession_name}_{data_freeze_name}")
         line["assemblyId"] = f"{accession_name}_{data_freeze_name}"
+
+
+@task(log_prints=True)
+def create_paired_accession_records(parsed: dict, data_freeze: dict, config: Config):
+    """
+    Create separate records for paired GCF accessions that have different data freeze values.
+
+    If both GCA and GCF are in the data_freeze file with different values, we need separate
+    output records for each. This function identifies paired accessions and clones records.
+
+    Args:
+        parsed (dict): A dictionary containing parsed data (keyed by genbankAccession/GCA).
+        data_freeze (dict): A dictionary containing data freeze information.
+        config (Config): A Config object containing the configuration data.
+    """
+    data_freeze_name = (
+        re.sub(r"\.tsv(\.gz)?$", "", os.path.basename(config.meta["file_name"]))
+        if config.meta["file_name"]
+        else "data_freeze"
+    )
+
+    # Find all GCF accessions in data_freeze and create paired records if needed
+    new_records = {}
+
+    for accession, freeze_value in data_freeze.items():
+        if not accession.startswith("GCF_"):
+            continue
+
+        # Find if there's a corresponding GCA in parsed
+        # GCF_003369695.1 corresponds to GCA_003369695.2 (same number, different prefix)
+        gca_accession = None
+        for parsed_key, row in parsed.items():
+            if row.get("refseqAccession") == accession or parsed_key.replace("GCA_", "GCF_") == accession:
+                gca_accession = parsed_key
+                break
+
+        if gca_accession:
+            # Clone the record for the GCF accession with its own freeze values
+            gca_row = parsed[gca_accession]
+            gcf_row = {**gca_row}  # Shallow copy is fine for this
+
+            # Handle both comma-separated strings and lists
+            if isinstance(freeze_value, str) and "," in freeze_value:
+                gcf_row["dataFreeze"] = freeze_value.split(",")
+            else:
+                gcf_row["dataFreeze"] = freeze_value
+
+            # Set the assemblyId with GCF accession
+            gcf_row["assemblyId"] = f"{accession}_{data_freeze_name}"
+
+            # Update the refseqAccession to match since this is now the primary key
+            gcf_row["refseqAccession"] = accession
+
+            new_records[accession] = gcf_row
+            print(f"Created paired record for {accession} with dataFreeze: {gcf_row['dataFreeze']}")
+
+    # Add new records to parsed
+    parsed.update(new_records)
+    print(f"Added {len(new_records)} paired GCF records")
 
 
 @flow(log_prints=True)
@@ -596,6 +655,7 @@ def parse_ncbi_assemblies(
     else:
         data_freeze = parse_data_freeze_file(data_freeze_path)  # This returns the data freeze dictionary
         process_datafreeze_info(parsed, data_freeze, config)
+        create_paired_accession_records(parsed, data_freeze, config)
     snapshot_previous_output(config)
     write_to_tsv(parsed, config)
 
