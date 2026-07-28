@@ -490,6 +490,9 @@ def parse_data_freeze_file(data_freeze_path: str) -> dict:
     print(f"Fetching data freeze file from {data_freeze_path}")
     data_freeze = parse_s3_file(data_freeze_path)
     print(f"Parsed {len(data_freeze)} entries from data freeze file")
+    # Debug: print first few entries to verify structure
+    for i, (k, v) in enumerate(list(data_freeze.items())[:5]):
+        print(f"  Sample entry {i}: {k} -> {v}")
     return data_freeze
 
 
@@ -523,15 +526,32 @@ def process_datafreeze_info(processed_report: dict, data_freeze: dict, config: C
         else "data_freeze"
     )
     print(f"Processing data freeze info for {data_freeze_name}")
-    for line in processed_report.values():
-        print(f"Processing data freeze info for {line['refseqAccession']} - " f"{line['genbankAccession']}")
-        status = data_freeze.get(line["refseqAccession"]) or data_freeze.get(line["genbankAccession"])
+    for accession, line in processed_report.items():
+        refseq = line.get('refseqAccession', 'N/A')
+        genbank = line.get('genbankAccession', 'N/A')
+        print(f"Processing data freeze info for {refseq} - {genbank}")
+        
+        # Debug: check what's found in data_freeze
+        refseq_status = data_freeze.get(refseq)
+        genbank_status = data_freeze.get(genbank)
+        if refseq_status:
+            print(f"  Found via refseqAccession ({refseq}): {refseq_status}")
+        if genbank_status:
+            print(f"  Found via genbankAccession ({genbank}): {genbank_status}")
+        
+        status = refseq_status or genbank_status
         if not status:
+            print(f"  No match found in data_freeze")
             continue
-        print(line.keys())
-        line["dataFreeze"] = status
+        
+        print(f"  Setting dataFreeze to: {status}")
+        # Handle both comma-separated strings and lists
+        if isinstance(status, str) and ',' in status:
+            line["dataFreeze"] = status.split(',')
+        else:
+            line["dataFreeze"] = status
 
-        accession_name = line["refseqAccession"] if line["refseqAccession"] in data_freeze else line["genbankAccession"]
+        accession_name = refseq if refseq in data_freeze else genbank
 
         print(f"Renaming assemblyId for {accession_name} to {accession_name}_{data_freeze_name}")
         line["assemblyId"] = f"{accession_name}_{data_freeze_name}"
