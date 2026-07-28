@@ -531,17 +531,21 @@ def process_datafreeze_info(processed_report: dict, data_freeze: dict, config: C
         genbank = line.get("genbankAccession", "N/A")
         print(f"Processing data freeze info for {refseq} - {genbank}")
 
-        # Debug: check what's found in data_freeze
-        refseq_status = data_freeze.get(refseq)
-        genbank_status = data_freeze.get(genbank)
-        if refseq_status:
-            print(f"  Found via refseqAccession ({refseq}): {refseq_status}")
-        if genbank_status:
-            print(f"  Found via genbankAccession ({genbank}): {genbank_status}")
+        # Look up data freeze values: only use the value for the accession that's in data_freeze
+        # This prevents GCA records from getting GCF values or vice versa
+        status = None
+        accession_name = None
 
-        status = refseq_status or genbank_status
-        if not status:
-            print(f"  No match found in data_freeze")
+        if refseq in data_freeze:
+            status = data_freeze.get(refseq)
+            accession_name = refseq
+            print(f"  Found via refseqAccession ({accession_name}): {status}")
+        elif genbank in data_freeze:
+            status = data_freeze.get(genbank)
+            accession_name = genbank
+            print(f"  Found via genbankAccession ({accession_name}): {status}")
+        else:
+            print("  No match found in data_freeze")
             continue
 
         print(f"  Setting dataFreeze to: {status}")
@@ -550,8 +554,6 @@ def process_datafreeze_info(processed_report: dict, data_freeze: dict, config: C
             line["dataFreeze"] = status.split(",")
         else:
             line["dataFreeze"] = status
-
-        accession_name = refseq if refseq in data_freeze else genbank
 
         print(f"Renaming assemblyId for {accession_name} to {accession_name}_{data_freeze_name}")
         line["assemblyId"] = f"{accession_name}_{data_freeze_name}"
@@ -583,24 +585,22 @@ def create_paired_accession_records(parsed: dict, data_freeze: dict, config: Con
         if not accession.startswith("GCF_"):
             continue
 
-        # Find if there's a corresponding GCA in parsed
-        # GCF_003369695.1 corresponds to GCA_003369695.2 (same number, different prefix)
-        gca_accession = None
-        for parsed_key, row in parsed.items():
-            if row.get("refseqAccession") == accession or parsed_key.replace("GCA_", "GCF_") == accession:
-                gca_accession = parsed_key
-                break
-
-        if gca_accession:
+        if gca_accession := next(
+            (
+                parsed_key
+                for parsed_key, row in parsed.items()
+                if row.get("refseqAccession") == accession or parsed_key.replace("GCA_", "GCF_") == accession
+            ),
+            None,
+        ):
             # Clone the record for the GCF accession with its own freeze values
             gca_row = parsed[gca_accession]
-            gcf_row = {**gca_row}  # Shallow copy is fine for this
-
-            # Handle both comma-separated strings and lists
-            if isinstance(freeze_value, str) and "," in freeze_value:
-                gcf_row["dataFreeze"] = freeze_value.split(",")
-            else:
-                gcf_row["dataFreeze"] = freeze_value
+            gcf_row = {
+                **gca_row,
+                "dataFreeze": (
+                    freeze_value.split(",") if isinstance(freeze_value, str) and "," in freeze_value else freeze_value
+                ),
+            }
 
             # Set the assemblyId with GCF accession
             gcf_row["assemblyId"] = f"{accession}_{data_freeze_name}"
