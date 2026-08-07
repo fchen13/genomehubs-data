@@ -19,10 +19,10 @@ from typing import Dict, List, Optional
 import boto3
 import requests
 from botocore.exceptions import ClientError
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 from dateutil import parser
 from genomehubs import utils as gh_utils
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 
 def set_feature_headers() -> list[str]:
@@ -67,23 +67,17 @@ class Config:
         self.previous_parsed = {}
         if load_previous:
             with contextlib.suppress(Exception):
-                self.previous_parsed = gh_utils.load_previous(
-                    self.meta["file_name"], "genbankAccession", self.headers
-                )
+                self.previous_parsed = gh_utils.load_previous(self.meta["file_name"], "genbankAccession", self.headers)
         self.feature_file = feature_file
         if feature_file is not None:
             self.feature_headers = set_feature_headers()
             try:
-                self.previous_features = gh_utils.load_previous(
-                    feature_file, "assembly_id", self.feature_headers
-                )
+                self.previous_features = gh_utils.load_previous(feature_file, "assembly_id", self.feature_headers)
             except Exception:
                 self.previous_features = {}
 
 
-def load_config(
-    config_file: str, feature_file: Optional[str] = None, load_previous: bool = False
-) -> Config:
+def load_config(config_file: str, feature_file: Optional[str] = None, load_previous: bool = False) -> Config:
     """
     Load the configuration file.
 
@@ -205,22 +199,13 @@ def locate_input_tsv(work_dir: str, expected_name: Optional[str] = None) -> str:
         FileNotFoundError: If no candidate TSV is found.
         ValueError: If multiple candidate TSVs are found.
     """
-    candidates = sorted(
-        glob.glob(os.path.join(work_dir, "*.tsv"))
-        + glob.glob(os.path.join(work_dir, "*.tsv.gz"))
-    )
+    candidates = sorted(glob.glob(os.path.join(work_dir, "*.tsv")) + glob.glob(os.path.join(work_dir, "*.tsv.gz")))
     if expected_name:
-        candidates = [
-            c for c in candidates if os.path.basename(c) != expected_name
-        ]
+        candidates = [c for c in candidates if os.path.basename(c) != expected_name]
     if not candidates:
-        raise FileNotFoundError(
-            f"No TSV input found in {work_dir} (expected != {expected_name})"
-        )
+        raise FileNotFoundError(f"No TSV input found in {work_dir} (expected != {expected_name})")
     if len(candidates) > 1:
-        raise ValueError(
-            f"Multiple TSV inputs in {work_dir}: {candidates!r}"
-        )
+        raise ValueError(f"Multiple TSV inputs in {work_dir}: {candidates!r}")
     return candidates[0]
 
 
@@ -252,9 +237,7 @@ def run_generic_tsv_parser(
     print(f"Parsed {len(parsed)} records")
 
     output_name = config.meta["file_name"]
-    config.meta["file_name"] = os.path.join(
-        work_dir, os.path.basename(output_name)
-    )
+    config.meta["file_name"] = os.path.join(work_dir, os.path.basename(output_name))
     try:
         write_parsed_tsv(parsed, config)
     finally:
@@ -299,9 +282,7 @@ def format_entry(entry, key: str, meta: dict) -> str:
         return str(entry)
     if "separators" not in meta or isinstance(meta["separators"], str):
         return ",".join([str(e) for e in entry if e is not None])
-    return (
-        meta["separators"].get(key, ",").join([str(e) for e in entry if e is not None])
-    )
+    return meta["separators"].get(key, ",").join([str(e) for e in entry if e is not None])
 
 
 def append_to_tsv(headers: list[str], rows: list[dict], meta: dict):
@@ -318,12 +299,7 @@ def append_to_tsv(headers: list[str], rows: list[dict], meta: dict):
     with open(meta["file_name"], "a") as f:
         for row in rows:
             if isinstance(row, dict):
-                f.write(
-                    "\t".join(
-                        [format_entry(row.get(col, []), col, meta) for col in headers]
-                    )
-                    + "\n"
-                )
+                f.write("\t".join([format_entry(row.get(col, []), col, meta) for col in headers]) + "\n")
 
 
 def convert_keys_to_camel_case(data: dict) -> dict:
@@ -344,10 +320,7 @@ def convert_keys_to_camel_case(data: dict) -> dict:
     for key, value in data.items():
         if isinstance(value, (dict, list)):
             value = convert_keys_to_camel_case(value)
-        converted_key = "".join(
-            word.capitalize() if i > 0 else word
-            for i, word in enumerate(key.split("_"))
-        )
+        converted_key = "".join(word.capitalize() if i > 0 else word for i, word in enumerate(key.split("_")))
         converted_data[converted_key] = value
     return converted_data
 
@@ -368,8 +341,7 @@ def set_organelle_name(seq: dict) -> Optional[str]:
     try:
         return (
             "mitochondrion"
-            if seq[0]["assigned_molecule_location_type"].casefold()
-            == "Mitochondrion".casefold()
+            if seq[0]["assigned_molecule_location_type"].casefold() == "Mitochondrion".casefold()
             else "plastid"
         )
     except KeyError:
@@ -393,9 +365,7 @@ def is_assembled_molecule(seq: dict) -> bool:
         return False
 
 
-def set_additional_organelle_values(
-    seq: dict, organelle: dict, data: dict, organelle_name: str
-) -> None:
+def set_additional_organelle_values(seq: dict, organelle: dict, data: dict, organelle_name: str) -> None:
     """
     Sets additional organelle-related values in the provided data dictionary based on
     the sequence data. If the sequence data represents an assembled molecule, it
@@ -415,22 +385,12 @@ def set_additional_organelle_values(
             organelle["genbankAssmAccession"] = seq[0]["genbank_accession"]
             organelle["totalSequenceLength"] = seq[0]["length"]
             organelle["gcPercent"] = seq[0]["gc_percent"]
-            data["processedOrganelleInfo"][organelle_name]["assemblySpan"] = organelle[
-                "totalSequenceLength"
-            ]
-            data["processedOrganelleInfo"][organelle_name]["gcPercent"] = organelle[
-                "gcPercent"
-            ]
-            data["processedOrganelleInfo"][organelle_name]["accession"] = seq[0][
-                "genbank_accession"
-            ]
+            data["processedOrganelleInfo"][organelle_name]["assemblySpan"] = organelle["totalSequenceLength"]
+            data["processedOrganelleInfo"][organelle_name]["gcPercent"] = organelle["gcPercent"]
+            data["processedOrganelleInfo"][organelle_name]["accession"] = seq[0]["genbank_accession"]
     else:
         data["processedOrganelleInfo"][organelle_name]["scaffolds"] = ";".join(
-            [
-                entry["genbank_accession"]
-                for entry in seq
-                if "genbank_accession" in entry
-            ]
+            [entry["genbank_accession"] for entry in seq if "genbank_accession" in entry]
         )
 
 
@@ -520,8 +480,7 @@ def add_chromosome_entries(data: dict, chromosomes: list[dict]) -> None:
                 "length": seq["length"],
                 "midpoint": round(seq["length"] / 2),
                 "midpoint_proportion": 0.5,
-                "seq_proportion": seq["length"]
-                / int(data["assemblyStats"]["totalSequenceLength"]),
+                "seq_proportion": seq["length"] / int(data["assemblyStats"]["totalSequenceLength"]),
             }
         )
 
@@ -577,9 +536,7 @@ def is_assigned_to_chromosome(seq: dict) -> bool:
     )
 
 
-def check_ebp_criteria(
-    data: dict, span: int, chromosomes: list, assigned_span: int
-) -> bool:
+def check_ebp_criteria(data: dict, span: int, chromosomes: list, assigned_span: int) -> bool:
     """
     Checks if the given assembly data meets the EBP (Earth BioGenome Project) criteria.
 
@@ -611,9 +568,7 @@ def check_ebp_criteria(
         elif scaffold_n50 < 10000000 and contig_n50 >= 100000:
             standardCriteria.append("5.6")
     if standardCriteria:
-        data["processedAssemblyStats"]["ebpStandardDate"] = data["assemblyInfo"][
-            "releaseDate"
-        ]
+        data["processedAssemblyStats"]["ebpStandardDate"] = data["assemblyInfo"]["releaseDate"]
         data["processedAssemblyStats"]["ebpStandardCriteria"] = standardCriteria
     data["processedAssemblyStats"]["assignedProportion"] = assignedProportion
     return False
@@ -751,7 +706,7 @@ def safe_get(*args, method="GET", timeout=300, **kwargs):
         return session.head(*args, timeout=timeout, **kwargs)
 
 
-def find_http_file(http_path: str, filename: str) -> str:
+def find_http_file(http_path: str, filename: str) -> str | None:
     """
     Find files for the record ID.
 
@@ -760,10 +715,10 @@ def find_http_file(http_path: str, filename: str) -> str:
         filename (str): Name of the file to find.
 
     Returns:
-        str: Path to the file.
+        str | None: Path to the file if found, None otherwise.
     """
     response = safe_get(f"{http_path}/{filename}")
-    return f"{http_path}/{filename}" if response.status_code == 200 else None
+    return f"{http_path}/{filename}" if response and response.status_code == 200 else None
 
 
 def get_genomehubs_attribute_value(result: dict, attribute: str) -> str:
@@ -777,15 +732,10 @@ def get_genomehubs_attribute_value(result: dict, attribute: str) -> str:
     Returns:
         str: Value of the attribute.
     """
-    return (
-        result.get("result", {})
-        .get("fields", {})
-        .get("odb10_lineage", {})
-        .get("value", None)
-    )
+    return result.get("result", {}).get("fields", {}).get("odb10_lineage", {}).get("value", None)
 
 
-def find_s3_file(s3_path: list, filename: str) -> str:
+def find_s3_file(s3_path: list, filename: str) -> str | None:
     """
     Find files for the record ID.
 
@@ -794,7 +744,7 @@ def find_s3_file(s3_path: list, filename: str) -> str:
         filename (str): Name of the file to find.
 
     Returns:
-        str: Path to the file.
+        str | None: Path to the file if found, None otherwise.
     """
     for s3_bucket in s3_path:
         s3 = boto3.client("s3")
@@ -915,12 +865,7 @@ def upload_to_s3(local_path: str, s3_path: str, gz: bool = False) -> None:
                     text=True,
                 )
                 if result.returncode != 0:
-                    print(
-                        (
-                            f"Error uploading {local_path} to {s3_path} "
-                            f"with s3cmd: {result.stderr}"
-                        )
-                    )
+                    print((f"Error uploading {local_path} to {s3_path} " f"with s3cmd: {result.stderr}"))
                     raise RuntimeError(f"s3cmd upload failed: {result.stderr}")
             finally:
                 if os.path.exists(gz_path):
@@ -936,12 +881,7 @@ def upload_to_s3(local_path: str, s3_path: str, gz: bool = False) -> None:
             ]
             result = run_quoted(cmd, capture_output=True, text=True)
             if result.returncode != 0:
-                print(
-                    (
-                        f"Error uploading {local_path} to {s3_path} "
-                        f"with s3cmd: {result.stderr}"
-                    )
-                )
+                print((f"Error uploading {local_path} to {s3_path} " f"with s3cmd: {result.stderr}"))
                 raise RuntimeError(f"s3cmd upload failed: {result.stderr}")
     except Exception as e:
         print(f"Error uploading {local_path} to {s3_path}: {e}")
@@ -972,15 +912,8 @@ def parse_s3_file(data_freeze_path: str) -> dict:
                     parsed[key] = []
                     continue
                 # For each value column, split on comma and store as list
-                value_lists = [
-                    [v.strip() for v in col.split(",") if v.strip()]
-                    for col in parts[1:]
-                ]
-                parsed[key] = (
-                    value_lists
-                    if len(value_lists) > 1
-                    else (value_lists[0] if value_lists else [])
-                )
+                value_lists = [[v.strip() for v in col.split(",") if v.strip()] for col in parts[1:]]
+                parsed[key] = value_lists if len(value_lists) > 1 else (value_lists[0] if value_lists else [])
     return parsed
 
 
@@ -988,7 +921,7 @@ def set_index_name(
     index_type: str,
     hub_name: str,
     taxonomy_name: str = "ncbi",
-    date: str = None,
+    date: str | None = None,
     separator: str = "--",
 ) -> str:
     """
@@ -1010,9 +943,7 @@ def set_index_name(
     else:
         # change the date format to YYYY.MM.DD
         date = date.replace("-", ".")
-    return (
-        f"{hub_name}{separator}{taxonomy_name}{separator}{index_type}{separator}{date}"
-    )
+    return f"{hub_name}{separator}{taxonomy_name}{separator}{index_type}{separator}{date}"
 
 
 def parse_tsv(text: str) -> List[Dict[str, str]]:
@@ -1055,18 +986,17 @@ def last_modified_git_remote(http_path: str) -> Optional[int]:
         ref = parts[4]
         file = "%2F".join(parts[5:]).split("?")[0]
         api_url = (
-            f"https://gitlab.com/api/v4/projects/{project}/repository/commits"
-            f"?ref_name={ref}&path={file}&per_page=1"
+            f"https://gitlab.com/api/v4/projects/{project}/repository/commits" f"?ref_name={ref}&path={file}&per_page=1"
         )
         response = safe_get(api_url)
-        if response.status_code == 200:
+        if response and response.status_code == 200:
             commits = response.json()
             if commits and commits[0].get("committed_date"):
                 dt = parser.isoparse(commits[0]["committed_date"])
                 return int(dt.timestamp())
-        else:
+        if response is None or response.status_code != 200:
             response = safe_get(http_path, method="HEAD", allow_redirects=True)
-            if response.status_code == 200:
+            if response and response.status_code == 200:
                 if last_modified := response.headers.get("Last-Modified", None):
                     dt = parser.parse(last_modified)
                     return int(dt.timestamp())
@@ -1089,7 +1019,7 @@ def last_modified_http(http_path: str) -> Optional[int]:
     if "gitlab.com" in http_path:
         return last_modified_git_remote(http_path)
     response = safe_get(http_path, method="HEAD", allow_redirects=True)
-    if response.status_code == 200:
+    if response and response.status_code == 200:
         if last_modified := response.headers.get("Last-Modified", None):
             dt = parser.parse(last_modified)
             return int(dt.timestamp())

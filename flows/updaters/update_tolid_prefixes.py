@@ -33,7 +33,7 @@ def fetch_tolid_prefixes(
     os.makedirs(local_path, exist_ok=True)
     local_file = f"{local_path}/tolids.txt"
     # Fetch the remote file
-    cmd = ["curl", "-sSL", f'"{http_path}"', "-o", local_file]
+    cmd = ["curl", "-sSL", http_path, "-o", local_file]
     print(f"Running command: {' '.join(cmd)}")
     run_quoted(cmd, check=True)
 
@@ -69,9 +69,7 @@ def update_tolid_prefixes(output_path: str) -> bool:
     Args:
         output_path (str): Path to save the taxonomy dump.
     """
-    http_path = (
-        "https://gitlab.com/wtsi-grit/darwin-tree-of-life-sample-naming/" "-/raw/master/tolids.txt?ref_type=heads"
-    )
+    http_path = "https://gitlab.com/wtsi-grit/darwin-tree-of-life-sample-naming/-/raw/master/tolids.txt?ref_type=heads"
     status = None
     complete = False
     if tolid_file_is_up_to_date(output_path, http_path):
