@@ -22,6 +22,155 @@ SEQUENCE_DERIVED_ROOTS = {
     "organelles",
 }
 
+CANONICAL_RANKS = ["genus", "family", "order", "class", "phylum", "kingdom"]
+
+
+def _normalise_taxid(value) -> str | None:
+    """Turn a taxid-like value into a stable string key."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        value = value.strip()
+        return value or None
+    return str(value)
+
+
+def locate_taxonomy_lookup(work_dir: str) -> str:
+    """Locate the blobtk taxonomy nodes.jsonl by convention.
+
+    Search order:
+      1. work_dir/nodes.jsonl
+      2. work_dir/taxonomy/nodes.jsonl
+      3. sibling taxonomy dirs under the parent (for example ../genomehubs-taxonomy/*/nodes.jsonl)
+
+    Rules:
+      - no file -> raise FileNotFoundError
+      - one file -> return it
+      - multiple files -> raise ValueError
+    """
+    work_dir = os.path.abspath(work_dir)
+    candidates = []
+
+    # Same directory
+    candidates.extend(glob(os.path.join(work_dir, "nodes.jsonl")))
+
+    # Same directory under taxonomy/
+    candidates.extend(glob(os.path.join(work_dir, "taxonomy", "nodes.jsonl")))
+
+    # Sibling taxonomy area, e.g. ../genomehubs-taxonomy/eukaryota/nodes.jsonl
+    parent = os.path.dirname(work_dir)
+    sibling_candidates = glob(
+        os.path.join(parent, "genomehubs-taxonomy", "*", "nodes.jsonl"),
+        recursive=True,
+    )
+    candidates.extend(sibling_candidates)
+
+    # Generic sibling taxonomy dir
+    candidates.extend(glob(os.path.join(parent, "taxonomy", "nodes.jsonl")))
+    candidates.extend(glob(os.path.join(parent, "taxonomy", "*", "nodes.jsonl")))
+
+    # Deduplicate while preserving order
+    seen = set()
+    unique = []
+    for path in candidates:
+        real = os.path.abspath(path)
+        if real not in seen:
+            seen.add(real)
+            unique.append(real)
+
+    if not unique:
+        raise FileNotFoundError(
+            f"No taxonomy nodes.jsonl found near {work_dir}. "
+            "Expected one of: work_dir/nodes.jsonl, work_dir/taxonomy/nodes.jsonl, "
+            "or a sibling taxonomy dir such as ../genomehubs-taxonomy/*/nodes.jsonl"
+        )
+
+    if len(unique) > 1:
+        raise ValueError("Multiple taxonomy nodes.jsonl candidates found: " + ", ".join(unique))
+
+    return unique[0]
+
+
+def load_taxonomy_lookup(nodes_jsonl_path: str) -> dict[str, dict[str, str]]:
+    """Load blobtk taxonomy output into a taxid -> lineage lookup."""
+    lookup: dict[str, dict[str, str]] = {}
+
+    with open(nodes_jsonl_path, "r", encoding="utf-8") as fh:
+        for line_no, line in enumerate(fh, start=1):
+            if not line.strip():
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"Invalid JSON in taxonomy lookup file at line {line_no}: {exc}") from exc
+
+            taxid = rec.get("taxon_id")
+            if taxid is None:
+                continue
+
+            taxid_key = _normalise_taxid(taxid)
+            if taxid_key is None:
+                continue
+
+            simple_lineage: dict[str, str] = {}
+
+            lineage = rec.get("lineage", [])
+            for ancestor in lineage:
+                if not isinstance(ancestor, dict):
+                    continue
+                rank = ancestor.get("taxon_rank")
+                if rank in CANONICAL_RANKS:
+                    rank_value = ancestor.get("taxon_id")
+                    if rank_value is not None:
+                        simple_lineage[rank] = _normalise_taxid(rank_value) or ""
+
+            lookup[taxid_key] = simple_lineage
+
+    return lookup
+
+
+def enrich_assembly_row_with_taxonomy(row: dict, taxonomy_lookup: dict[str, dict[str, str]]) -> dict:
+    """Attach genus/family/order/class/phylum/kingdom taxids to a parsed row.
+
+    Expected row keys:
+      - taxId / tax_id / taxon_id
+    Output keys:
+      - genusTaxId
+      - familyTaxId
+      - orderTaxId
+      - classTaxId
+      - phylumTaxId
+      - kingdomTaxId
+    """
+    taxid_value = row.get("taxId") or row.get("tax_id") or row.get("taxon_id") or row.get("taxonId")
+    if taxid_value is None:
+        return row
+
+    taxid_key = _normalise_taxid(taxid_value)
+    if taxid_key is None:
+        return row
+
+    lineage = taxonomy_lookup.get(taxid_key) or {}
+    for rank in CANONICAL_RANKS:
+        row[f"{rank}TaxId"] = lineage.get(rank) or ""
+
+    return row
+
+
+def enrich_parsed_assemblies(parsed: dict, work_dir: str) -> dict:
+    """Load the taxonomy lookup from a sibling convention and enrich the parsed assembly rows."""
+    try:
+        taxonomy_path = locate_taxonomy_lookup(work_dir)
+    except (FileNotFoundError, ValueError) as e:
+        print(f"Warning: {e}. Skipping taxonomy enrichment.")
+        return parsed
+    taxonomy_lookup = load_taxonomy_lookup(taxonomy_path)
+
+    for row in parsed.values():
+        enrich_assembly_row_with_taxonomy(row, taxonomy_lookup)
+
+    return parsed
+
 
 def parse_assembly_report(jsonl_path: str) -> Generator[dict, None, None]:
     """
@@ -730,6 +879,7 @@ def parse_ncbi_assemblies(
         # Only include records that are in the data_freeze file
         parsed = build_data_freeze_output(parsed, data_freeze, config)
     snapshot_previous_output(config)
+    parsed = enrich_parsed_assemblies(parsed, os.path.dirname(input_path))
     write_to_tsv(parsed, config)
 
 
