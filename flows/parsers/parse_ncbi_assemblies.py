@@ -418,14 +418,22 @@ def add_report_to_parsed_reports(parsed: dict, report: dict, config: Config, bio
     return parsed
 
 
+def _normalise_release_date(value) -> str:
+    """Coerce release dates to a comparable, schema-agnostic string."""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        value = value.strip()
+    return str(value)
+
+
 def use_previous_report(processed_report: dict, parsed: dict, config: Config):
     """
     Reuse expensive sequence-derived fields if release date is unchanged.
 
-    Instead of copying the entire old row (which would preserve stale non-sequence values),
-    this function signals that we can skip fetching new sequence data because the
-    release date hasn't changed. The new data will be parsed normally, but expensive
-    fields will be reused from the previous report.
+    The previous row can be loaded under a slightly different YAML schema, so we
+    only treat it as reusable when the release dates match after normalization and
+    a valid cached sequence-derived field set is still available.
 
     Args:
         processed_report (dict): A dictionary containing processed assembly data.
@@ -433,19 +441,21 @@ def use_previous_report(processed_report: dict, parsed: dict, config: Config):
         config (Config): A Config object containing the configuration data.
 
     Returns:
-        bool: True if release date is unchanged (sequence fields can be reused),
-              False otherwise (need to fetch new sequence data).
+        bool: True if release date is unchanged and sequence-derived cache data is valid,
+              False otherwise.
     """
     accession = processed_report["processedAssemblyInfo"]["genbankAccession"]
-    if accession in config.previous_parsed:
-        previous_report = config.previous_parsed[accession]
-        if processed_report["assemblyInfo"]["releaseDate"] == previous_report["releaseDate"]:
-            # Release date is unchanged - we can reuse cached expensive fields
-            # but we should NOT copy the entire old row as that would preserve stale values
-            # Return True to signal "use cached sequence fields" but don't store anything yet
-            # The calling code will handle parsing the new data and overlaying cached fields
-            return True
-    return False
+    if accession not in config.previous_parsed:
+        return False
+
+    previous_report = config.previous_parsed[accession]
+    current_release = _normalise_release_date(processed_report.get("assemblyInfo", {}).get("releaseDate"))
+    previous_release = _normalise_release_date(previous_report.get("releaseDate"))
+    if current_release != previous_release:
+        return False
+
+    cached_fields = get_cached_sequence_fields(processed_report, config)
+    return bool(cached_fields)
 
 
 @task()
@@ -526,11 +536,14 @@ def get_cached_sequence_fields(processed_report: dict, config: Config) -> Option
 
     previous_row = config.previous_parsed[accession]
 
-    # Check release date
-    if processed_report["assemblyInfo"]["releaseDate"] != previous_row.get("releaseDate"):
+    current_release = _normalise_release_date(processed_report.get("assemblyInfo", {}).get("releaseDate"))
+    previous_release = _normalise_release_date(previous_row.get("releaseDate"))
+    if current_release != previous_release:
         return None
 
-    # Find which headers correspond to sequence-derived paths
+    # Find which headers correspond to sequence-derived paths.
+    # This is intentionally schema-aware: adding taxonomy-only columns should not
+    # invalidate the cache, but missing sequence-derived keys should still count as a miss.
     types_cfg = config.config or {}
     keep_headers = set()
 
@@ -541,8 +554,8 @@ def get_cached_sequence_fields(processed_report: dict, config: Config) -> Option
             if header and any(path.startswith(f"{root}.") or path == root for root in SEQUENCE_DERIVED_ROOTS):
                 keep_headers.add(header)
 
-    # Return dict with only the kept headers
-    return {h: previous_row[h] for h in keep_headers if h in previous_row and previous_row[h]}
+    cached = {h: previous_row[h] for h in keep_headers if h in previous_row and previous_row[h] not in (None, "")}
+    return cached or None
 
 
 @task()
