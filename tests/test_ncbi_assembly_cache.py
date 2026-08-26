@@ -23,7 +23,7 @@ def _make_config(previous_row):
     )
 
 
-def test_release_date_cache_is_normalized_before_reuse():
+def test_same_release_date_reuses_previous_row_under_new_headers():
     processed_report = {
         "processedAssemblyInfo": {"genbankAccession": "GCA_00000001.1"},
         "assemblyInfo": {"releaseDate": "2024-01-01"},
@@ -31,7 +31,7 @@ def test_release_date_cache_is_normalized_before_reuse():
     config = _make_config(
         {
             "genbankAccession": "GCA_00000001.1",
-            "releaseDate": " 2024-01-01 ",
+            "releaseDate": "2024-01-01",
             "totalSequenceLength": "12345",
         }
     )
@@ -55,3 +55,20 @@ def test_same_release_date_without_sequence_fields_still_avoids_refetch():
 
     assert use_previous_report(processed_report, {}, config) is True
     assert get_cached_sequence_fields(processed_report, config) == {}
+
+
+def test_different_release_date_does_not_reuse_previous_row():
+    processed_report = {
+        "processedAssemblyInfo": {"genbankAccession": "GCA_00000001.1"},
+        "assemblyInfo": {"releaseDate": "2024-01-02"},
+    }
+    config = _make_config(
+        {
+            "genbankAccession": "GCA_00000001.1",
+            "releaseDate": "2024-01-01",
+            "totalSequenceLength": "12345",
+        }
+    )
+
+    assert use_previous_report(processed_report, {}, config) is False
+    assert get_cached_sequence_fields(processed_report, config) is None

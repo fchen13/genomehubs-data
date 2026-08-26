@@ -418,22 +418,14 @@ def add_report_to_parsed_reports(parsed: dict, report: dict, config: Config, bio
     return parsed
 
 
-def _normalise_release_date(value) -> str:
-    """Coerce release dates to a comparable, schema-agnostic string."""
-    if value is None:
-        return ""
-    if isinstance(value, str):
-        value = value.strip()
-    return str(value)
-
-
 def use_previous_report(processed_report: dict, parsed: dict, config: Config):
     """
     Reuse previous sequence-derived data when the assembly release date is unchanged.
 
-    The release-date comparison is the authoritative guard. If the assembly is the
-    same release, we should not re-fetch sequence metadata just because the YAML or
-    previous TSV has a different field inventory or a subset of cached values.
+    The raw releaseDate string is the authoritative guard in the current pipeline.
+    If the assembly is the same release, we should not re-fetch sequence metadata
+    just because the previous TSV was loaded under a different header set or because
+    the previous row is missing some sequence-derived keys from the current schema.
 
     Args:
         processed_report (dict): A dictionary containing processed assembly data.
@@ -441,7 +433,7 @@ def use_previous_report(processed_report: dict, parsed: dict, config: Config):
         config (Config): A Config object containing the configuration data.
 
     Returns:
-        bool: True if the accession is known and the normalized release date matches,
+        bool: True if the accession is known and the releaseDate strings match,
               False otherwise.
     """
     accession = processed_report["processedAssemblyInfo"]["genbankAccession"]
@@ -449,8 +441,8 @@ def use_previous_report(processed_report: dict, parsed: dict, config: Config):
         return False
 
     previous_report = config.previous_parsed[accession]
-    current_release = _normalise_release_date(processed_report.get("assemblyInfo", {}).get("releaseDate"))
-    previous_release = _normalise_release_date(previous_report.get("releaseDate"))
+    current_release = processed_report.get("assemblyInfo", {}).get("releaseDate")
+    previous_release = previous_report.get("releaseDate")
     return current_release == previous_release
 
 
@@ -525,21 +517,21 @@ def _is_sequence_derived(path: str) -> bool:
 
 
 def get_cached_sequence_fields(processed_report: dict, config: Config) -> Optional[dict]:
-    """Return cached sequence-derived field values if releaseDate matches."""
+    """Return cached sequence-derived field values when the releaseDate matches."""
     accession = processed_report["processedAssemblyInfo"]["genbankAccession"]
     if accession not in config.previous_parsed:
         return None
 
     previous_row = config.previous_parsed[accession]
 
-    current_release = _normalise_release_date(processed_report.get("assemblyInfo", {}).get("releaseDate"))
-    previous_release = _normalise_release_date(previous_row.get("releaseDate"))
+    current_release = processed_report.get("assemblyInfo", {}).get("releaseDate")
+    previous_release = previous_row.get("releaseDate")
     if current_release != previous_release:
         return None
 
-    # Find which headers correspond to sequence-derived paths.
-    # This is intentionally schema-aware: adding taxonomy-only columns should not
-    # invalidate the cache, but missing sequence-derived keys should still count as a miss.
+    # Previous rows can be loaded under a different YAML header set. The cache
+    # should still be considered valid for the same release date even when the
+    # previous row has fewer sequence-derived keys than the current schema.
     types_cfg = config.config or {}
     keep_headers = set()
 
@@ -550,7 +542,11 @@ def get_cached_sequence_fields(processed_report: dict, config: Config) -> Option
             if header and any(path.startswith(f"{root}.") or path == root for root in SEQUENCE_DERIVED_ROOTS):
                 keep_headers.add(header)
 
-    cached = {h: previous_row[h] for h in keep_headers if h in previous_row and previous_row[h] not in (None, "")}
+    cached = {}
+    for header in keep_headers:
+        value = previous_row.get(header)
+        if value not in (None, ""):
+            cached[header] = value
     return cached
 
 
