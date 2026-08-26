@@ -429,11 +429,11 @@ def _normalise_release_date(value) -> str:
 
 def use_previous_report(processed_report: dict, parsed: dict, config: Config):
     """
-    Reuse expensive sequence-derived fields if release date is unchanged.
+    Reuse previous sequence-derived data when the assembly release date is unchanged.
 
-    The previous row can be loaded under a slightly different YAML schema, so we
-    only treat it as reusable when the release dates match after normalization and
-    a valid cached sequence-derived field set is still available.
+    The release-date comparison is the authoritative guard. If the assembly is the
+    same release, we should not re-fetch sequence metadata just because the YAML or
+    previous TSV has a different field inventory or a subset of cached values.
 
     Args:
         processed_report (dict): A dictionary containing processed assembly data.
@@ -441,7 +441,7 @@ def use_previous_report(processed_report: dict, parsed: dict, config: Config):
         config (Config): A Config object containing the configuration data.
 
     Returns:
-        bool: True if release date is unchanged and sequence-derived cache data is valid,
+        bool: True if the accession is known and the normalized release date matches,
               False otherwise.
     """
     accession = processed_report["processedAssemblyInfo"]["genbankAccession"]
@@ -451,11 +451,7 @@ def use_previous_report(processed_report: dict, parsed: dict, config: Config):
     previous_report = config.previous_parsed[accession]
     current_release = _normalise_release_date(processed_report.get("assemblyInfo", {}).get("releaseDate"))
     previous_release = _normalise_release_date(previous_report.get("releaseDate"))
-    if current_release != previous_release:
-        return False
-
-    cached_fields = get_cached_sequence_fields(processed_report, config)
-    return bool(cached_fields)
+    return current_release == previous_release
 
 
 @task()
@@ -555,7 +551,7 @@ def get_cached_sequence_fields(processed_report: dict, config: Config) -> Option
                 keep_headers.add(header)
 
     cached = {h: previous_row[h] for h in keep_headers if h in previous_row and previous_row[h] not in (None, "")}
-    return cached or None
+    return cached
 
 
 @task()
@@ -594,15 +590,13 @@ def process_assembly_reports(
             # (don't copy the old row wholesale)
 
             if can_reuse_cached:
-                # Get cached expensive sequence-derived fields if release date unchanged
+                # Release date is unchanged: skip re-fetching sequence metadata even if
+                # the previous row lacks a subset of cached sequence-derived values.
                 cached_fields = get_cached_sequence_fields(processed_report, config)
-                # Fetch sequence data if cache miss, otherwise skip fetch
-                if not cached_fields:
-                    fetch_and_parse_sequence_report(processed_report)
-                # If we have cached fields, they'll be applied after parsing below
             else:
                 # Release date changed, fetch new sequence data
                 fetch_and_parse_sequence_report(processed_report)
+                cached_fields = {}
 
             append_features(processed_report, config)
             add_report_to_parsed_reports(parsed, processed_report, config, biosamples)

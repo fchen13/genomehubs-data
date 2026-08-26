@@ -40,7 +40,7 @@ def test_release_date_cache_is_normalized_before_reuse():
     assert get_cached_sequence_fields(processed_report, config) == {"totalSequenceLength": "12345"}
 
 
-def test_missing_sequence_fields_does_not_count_as_a_valid_cache_hit():
+def test_same_release_date_without_sequence_fields_still_avoids_refetch():
     processed_report = {
         "processedAssemblyInfo": {"genbankAccession": "GCA_00000001.1"},
         "assemblyInfo": {"releaseDate": "2024-01-01"},
@@ -53,5 +53,5 @@ def test_missing_sequence_fields_does_not_count_as_a_valid_cache_hit():
         }
     )
 
-    assert use_previous_report(processed_report, {}, config) is False
-    assert get_cached_sequence_fields(processed_report, config) is None
+    assert use_previous_report(processed_report, {}, config) is True
+    assert get_cached_sequence_fields(processed_report, config) == {}
