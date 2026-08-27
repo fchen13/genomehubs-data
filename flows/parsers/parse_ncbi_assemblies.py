@@ -121,8 +121,7 @@ def load_taxonomy_lookup(nodes_jsonl_path: str) -> dict[str, dict[str, str]]:
                 rank = ancestor.get("taxon_rank")
                 if rank in CANONICAL_RANKS:
                     rank_value = ancestor.get("taxon_id")
-                    if rank_value is not None:
-                        simple_lineage[rank] = _normalise_taxid(rank_value) or ""
+                    simple_lineage[rank] = _normalise_taxid(rank_value) or "None"
 
             lookup[taxid_key] = simple_lineage
 
