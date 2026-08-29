@@ -32,7 +32,11 @@ COL_SUPERSEDED_BY_VERSION = "superseded_by_version"
 COL_SUPERSEDED_DATE = "superseded_date"
 
 ACCESSION_ALIASES = (COL_ACCESSION, "accession")
-ASSEMBLY_ID_ALIASES = (COL_ASSEMBLY_ID, "assembly_id")
+# "assemblyId" is the spelling parse_ncbi_assemblies has written since
+# 5180090 (2026-07-27); assembly_historical.types.yaml and Phase 0 still use
+# "assemblyID".  Read both until the case is settled upstream — the write side
+# stays on COL_ASSEMBLY_ID, which is what the YAML declares.
+ASSEMBLY_ID_ALIASES = (COL_ASSEMBLY_ID, "assemblyId", "assembly_id")
 VERSION_STATUS_ALIASES = (COL_VERSION_STATUS, "version_status")
 
 # Filename of the historical TSV, and the outputs derived from it.  Used to
@@ -71,7 +75,11 @@ def get_accession(row: dict) -> str:
 
 
 def get_assembly_id(row: dict) -> str:
-    """Return a row's assembly ID, tolerating either naming convention.
+    """Return a row's assembly ID across all three spellings in the pipeline.
+
+    ``assemblyID`` is canonical (declared in assembly_historical.types.yaml and
+    written by Phase 0); ``assemblyId`` is what the current-assembly parser
+    writes upstream; ``assembly_id`` is the legacy snake_case form.
 
     Args:
         row (dict): A TSV row.

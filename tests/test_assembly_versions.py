@@ -639,9 +639,15 @@ class TestNormalisingAccessors:
     def test_accession_absent_returns_empty(self):
         assert get_accession({"taxId": "1"}) == ""
 
-    def test_assembly_id_both_conventions(self):
+    def test_assembly_id_all_three_spellings(self):
         assert get_assembly_id({"assemblyID": "GCA_1_1"}) == "GCA_1_1"
+        assert get_assembly_id({"assemblyId": "GCA_1_1"}) == "GCA_1_1"
         assert get_assembly_id({"assembly_id": "GCA_1_1"}) == "GCA_1_1"
+
+    def test_assembly_id_prefers_the_yaml_spelling(self):
+        """assemblyID is what the historical YAML declares, so it wins."""
+        row = {"assemblyID": "canonical", "assemblyId": "upstream"}
+        assert get_assembly_id(row) == "canonical"
 
     def test_version_status_both_conventions(self):
         assert get_version_status({"versionStatus": "superseded"}) == "superseded"
@@ -803,6 +809,21 @@ class TestSchemaConformance:
         )
         assert "version_status" not in row
         assert "assembly_id" not in row
+
+    def test_write_side_uses_the_yaml_spelling_of_assembly_id(self):
+        """Reads tolerate assemblyId; writes must stay on the declared name.
+
+        parse_ncbi_assemblies writes `assemblyId` upstream, but the historical
+        YAML declares `assemblyID`, so a row emitted with the lowercase form
+        would be dropped by the GenomeHubs write path.
+        """
+        row = build_superseded_row(
+            {"genbankAccession": "GCA_000222935.1", "assemblyId": "stale"},
+            1, "GCA_000222935.2", 2, "2024-01-15",
+        )
+        assert row["assemblyID"] == "GCA_000222935_1"
+        assert "assemblyID" in self._yaml_headers()
+        assert "assemblyId" not in self._yaml_headers()
 
     def test_written_header_is_a_subset_of_the_yaml_schema(self, tmp_path):
         headers = self._yaml_headers()
