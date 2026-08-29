@@ -16,13 +16,19 @@ import csv
 import os
 from collections import defaultdict
 
-from flows.lib.assembly_versions_utils import parse_accession
+from flows.lib.assembly_versions_utils import (
+    get_accession,
+    get_version_status,
+    open_tsv,
+    parse_accession,
+    resolve_current_tsv_paths,
+    resolve_historical_tsv_path,
+)
 from flows.lib.conditional_import import emit_event, flow
-from flows.lib.shared_args import WORK_DIR
+from flows.lib.shared_args import WORK_DIR, YAML_PATH
 from flows.lib.shared_args import parse_args as _parse_args
+from flows.lib.utils import load_config
 
-CURRENT_TSV = "assembly_current.tsv"
-HISTORICAL_TSV = "assembly_historical.tsv"
 OUTPUT_TSV = "assembly_version_summary.tsv"
 
 # EBP metric columns to check (either naming convention may appear)
@@ -54,11 +60,10 @@ def load_assemblies(current_tsv: str, historical_tsv: str) -> list[dict]:
             print(f"  Warning: {label} TSV not found: {path}")
             continue
         count = 0
-        with open(path, encoding="utf-8") as f:
+        with open_tsv(path) as f:
             for row in csv.DictReader(f, delimiter="\t"):
                 # Normalise to 'accession' so the rest of the code is uniform
-                if "accession" not in row or not row["accession"]:
-                    row["accession"] = row.get("genbankAccession", "")
+                row["accession"] = get_accession(row)
                 rows.append(row)
                 count += 1
         print(f"  Loaded {count} {label} rows")
@@ -95,11 +100,9 @@ def generate_summary_for_base(base_accession: str, rows: list[dict]) -> dict:
     first_row = rows[0]
     current_row = rows[-1]
 
-    # versionStatus column may be camelCase (Phase 0 YAML) or snake_case (Phase 1 copy)
-    def version_status(row):
-        return row.get("versionStatus") or row.get("version_status") or "current"
-
-    superseded_count = sum(1 for r in rows if version_status(r) == "superseded")
+    superseded_count = sum(
+        1 for r in rows if (get_version_status(r) or "current") == "superseded"
+    )
 
     # First version that met EBP metric criteria
     first_ebp_row = next((r for r in rows if _has_ebp_metric(r)), None)
@@ -141,15 +144,22 @@ SUMMARY_FIELDNAMES = [
 
 
 @flow(log_prints=True)
-def generate_assembly_summary(work_dir: str = ".") -> None:
+def generate_assembly_summary(
+    work_dir: str = ".", yaml_path: str | None = None
+) -> None:
     """Combine current and historical TSVs into a per-base-accession summary.
 
+    The current-TSV filename comes from the config when yaml_path is given,
+    and is otherwise discovered in work_dir, so nothing hardcodes it.
+
     Args:
-        work_dir: Directory containing assembly_current.tsv and
-            assembly_historical.tsv; output is written there too.
+        work_dir: Directory containing the current and historical TSVs;
+            output is written there too.
+        yaml_path: Optional YAML config naming the current TSV.
     """
-    current_tsv = os.path.join(work_dir, CURRENT_TSV)
-    historical_tsv = os.path.join(work_dir, HISTORICAL_TSV)
+    config = load_config(config_file=yaml_path) if yaml_path else None
+    current_tsv, _, _ = resolve_current_tsv_paths(work_dir, config=config)
+    historical_tsv = resolve_historical_tsv_path(work_dir)
     output_tsv = os.path.join(work_dir, OUTPUT_TSV)
 
     separator = "=" * 80
@@ -225,7 +235,9 @@ def generate_assembly_summary(work_dir: str = ".") -> None:
 
 if __name__ == "__main__":
     args = _parse_args(
-        [WORK_DIR],
+        [WORK_DIR, YAML_PATH],
         description="Aggregate current and historical assembly TSVs into version summary",
     )
-    generate_assembly_summary(work_dir=args.work_dir)
+    generate_assembly_summary(
+        work_dir=args.work_dir, yaml_path=getattr(args, "yaml_path", None)
+    )

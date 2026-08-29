@@ -1,17 +1,213 @@
-"""Shared utilities for assembly version discovery and fetching.
+"""Shared utilities for assembly version discovery, schema and paths.
 
-Used by both the backfill parser and the incremental updater to discover
-assembly versions via NCBI FTP and fetch per-version metadata.
+Used by the backfill parser, the incremental parser, the summary generator and
+the milestone flow to discover assembly versions via NCBI FTP, fetch
+per-version metadata, read rows written by any phase, and resolve the
+current-assembly TSV paths from a loaded config rather than a hardcoded name.
 """
 
+import glob as globmod
+import gzip
 import json
 import os
 import re
 import time
+from typing import Callable, Optional
 
 from flows.lib import utils
 
 ACCESSION_PATTERN = re.compile(r"^GC[AF]_\d{9}\.\d+$")
+
+# Leading bytes of a gzip member, used to detect compression by content.
+GZIP_MAGIC = b"\x1f\x8b"
+
+# Canonical column names, as declared in assembly_historical.types.yaml.  Every
+# phase writes these; the ``*_ALIASES`` tuples additionally tolerate the
+# snake_case spellings written by earlier revisions of the Phase 1 parser.
+COL_ACCESSION = "genbankAccession"
+COL_ASSEMBLY_ID = "assemblyID"
+COL_VERSION_STATUS = "versionStatus"
+COL_SUPERSEDED_BY = "superseded_by"
+COL_SUPERSEDED_BY_VERSION = "superseded_by_version"
+COL_SUPERSEDED_DATE = "superseded_date"
+
+ACCESSION_ALIASES = (COL_ACCESSION, "accession")
+ASSEMBLY_ID_ALIASES = (COL_ASSEMBLY_ID, "assembly_id")
+VERSION_STATUS_ALIASES = (COL_VERSION_STATUS, "version_status")
+
+# Filename of the historical TSV, and the outputs derived from it.  Used to
+# exclude the pipeline's own products when discovering the current TSV.
+HISTORICAL_TSV_NAME = "assembly_historical.tsv"
+CURRENT_TSV_DEFAULT = "assembly_current.tsv"
+DERIVED_TSV_NAMES = frozenset({
+    HISTORICAL_TSV_NAME,
+    "assembly_version_summary.tsv",
+    "taxon_milestone_summary.tsv",
+})
+
+
+def _first_present(row: dict, keys: tuple) -> str:
+    """Return the first non-empty value in ``row`` for any of ``keys``."""
+    for key in keys:
+        value = row.get(key)
+        if value:
+            return value
+    return ""
+
+
+def get_accession(row: dict) -> str:
+    """Return a row's versioned accession, whichever column holds it.
+
+    Real assembly TSVs use ``genbankAccession``; ``accession`` is accepted for
+    rows that originated from an NCBI JSONL record or an older parse.
+
+    Args:
+        row (dict): A TSV row.
+
+    Returns:
+        str: The versioned accession, or "" when absent.
+    """
+    return _first_present(row, ACCESSION_ALIASES)
+
+
+def get_assembly_id(row: dict) -> str:
+    """Return a row's assembly ID, tolerating either naming convention.
+
+    Args:
+        row (dict): A TSV row.
+
+    Returns:
+        str: The assembly ID, or "" when absent.
+    """
+    return _first_present(row, ASSEMBLY_ID_ALIASES)
+
+
+def get_version_status(row: dict) -> str:
+    """Return a row's version status, tolerating either naming convention.
+
+    Args:
+        row (dict): A TSV row.
+
+    Returns:
+        str: The version status, or "" when absent.
+    """
+    return _first_present(row, VERSION_STATUS_ALIASES)
+
+
+def is_gzipped(path: str) -> bool:
+    """Report whether a TSV is gzip-compressed.
+
+    The name alone is not enough: ``snapshot_previous_output`` copies a
+    gzipped current TSV verbatim to ``<name>.gz.previous``, so the compressed
+    file does not end ``.gz``.  Sniff the magic bytes, and fall back to the
+    extension when the file cannot be read.
+
+    Args:
+        path (str): Path to the TSV.
+
+    Returns:
+        bool: True when the file is gzip-compressed.
+    """
+    name = str(path)
+    try:
+        with open(name, "rb") as f:
+            return f.read(2) == GZIP_MAGIC
+    except OSError:
+        return name.endswith(".gz")
+
+
+def open_tsv(path: str, mode: str = "rt"):
+    """Open a TSV transparently, decompressing gzipped files.
+
+    Args:
+        path (str): Path to the TSV.
+        mode (str): Text mode to open with.
+
+    Returns:
+        IO: An open text-mode file object.
+    """
+    if is_gzipped(path):
+        return gzip.open(path, mode, encoding="utf-8")
+    return open(path, mode, encoding="utf-8")
+
+
+def discover_current_tsv_name(work_dir: str) -> str:
+    """Find the current-assembly TSV filename in ``work_dir``.
+
+    Fallback for callers that have no config to resolve from.  Considers every
+    ``*.tsv`` / ``*.tsv.gz`` in ``work_dir`` except the pipeline's own derived
+    outputs.
+
+    Args:
+        work_dir (str): Directory holding the pipeline files.
+
+    Returns:
+        str: Basename of the current TSV.  Falls back to
+            ``assembly_current.tsv`` when nothing is on disk yet, so callers
+            still produce a meaningful not-found message.
+
+    Raises:
+        ValueError: If several candidates are present and none of them is the
+            conventional ``assembly_current.tsv``.
+    """
+    candidates = sorted(
+        globmod.glob(os.path.join(work_dir, "*.tsv"))
+        + globmod.glob(os.path.join(work_dir, "*.tsv.gz"))
+    )
+    names = [
+        os.path.basename(c)
+        for c in candidates
+        if os.path.basename(c) not in DERIVED_TSV_NAMES
+    ]
+    if not names:
+        return CURRENT_TSV_DEFAULT
+    if len(names) == 1:
+        return names[0]
+    if CURRENT_TSV_DEFAULT in names:
+        return CURRENT_TSV_DEFAULT
+    raise ValueError(
+        f"Cannot identify the current assembly TSV in {work_dir}: {names}. "
+        "Pass a config so the filename can be resolved from meta['file_name']."
+    )
+
+
+def resolve_current_tsv_paths(
+    work_dir: str, config: Optional[object] = None
+) -> tuple[str, str, Callable]:
+    """Resolve the current-assembly TSV paths and the matching open function.
+
+    The filename comes from ``config.meta["file_name"]`` when a config is
+    supplied, so nothing hardcodes ``assembly_current.tsv``.  The previous-run
+    snapshot is ``<current>.previous``, written verbatim by
+    ``snapshot_previous_output`` — so it carries the same compression as the
+    current file, which is why the open function is returned alongside.
+
+    Args:
+        work_dir (str): Directory holding the pipeline files.
+        config (Config, optional): Loaded YAML config whose
+            ``meta["file_name"]`` names the current TSV.
+
+    Returns:
+        tuple: ``(current_tsv, previous_tsv, open_fn)``.
+    """
+    if config is not None:
+        name = os.path.basename(config.meta["file_name"])
+    else:
+        name = discover_current_tsv_name(work_dir)
+    current_tsv = os.path.join(work_dir, name)
+    return current_tsv, f"{current_tsv}.previous", open_tsv
+
+
+def resolve_historical_tsv_path(work_dir: str) -> str:
+    """Return the historical TSV path inside ``work_dir``.
+
+    Args:
+        work_dir (str): Directory holding the pipeline files.
+
+    Returns:
+        str: Path to assembly_historical.tsv.
+    """
+    return os.path.join(work_dir, HISTORICAL_TSV_NAME)
 
 
 def parse_version(accession: str) -> int:
