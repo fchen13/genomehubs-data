@@ -195,28 +195,37 @@ def resolve_output_path(config: Config, work_dir: str) -> str:
     return output_path
 
 
-def load_existing_accessions(output_path: str) -> set:
-    """Collect the accessions already present in the historical TSV.
+def read_existing_output(output_path: str) -> tuple[list, set]:
+    """Read the header and the accessions already in the historical TSV.
 
-    Only the accession column is read, so this stays cheap on a file holding
-    thousands of rows.
+    Only the header line and the accession column are kept, so this stays
+    cheap on a file holding tens of thousands of rows.
+
+    The header matters as much as the accessions: the Phase 1 daily parser
+    rewrites this file with the union of the columns across every row, so once
+    it has appended a superseded row copied from the current TSV the file
+    carries columns the historical config never declared.  Appending against
+    the config header would then write rows a few columns short.
 
     Args:
         output_path (str): Path to assembly_historical.tsv.
 
     Returns:
-        set: Accessions already written; empty when the file does not exist.
+        tuple: (header, accessions), both empty when the file does not exist
+            or holds nothing yet.
     """
     if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
-        return set()
+        return [], set()
 
     accessions = set()
     with open_tsv(output_path) as f:
-        for row in csv.DictReader(f, delimiter=DELIMITER):
+        reader = csv.DictReader(f, delimiter=DELIMITER)
+        for row in reader:
             accession = get_accession(row)
             if accession:
                 accessions.add(accession)
-    return accessions
+        header = list(reader.fieldnames or [])
+    return header, accessions
 
 
 def write_or_append_parsed(parsed: dict, config: Config) -> int:
@@ -233,6 +242,10 @@ def write_or_append_parsed(parsed: dict, config: Config) -> int:
     find_all_assembly_versions re-parses every version below the current one,
     and a completed checkpoint deliberately restarts from index 0.
 
+    Rows are appended under the header already on disk rather than the config
+    header, so a file the Phase 1 parser has widened keeps its columns lined
+    up.  A row missing one of those columns is written empty for it.
+
     Args:
         parsed (dict): Mapping of accession -> parsed row.
         config (Config): Loaded YAML configuration.
@@ -241,7 +254,7 @@ def write_or_append_parsed(parsed: dict, config: Config) -> int:
         int: Number of rows actually written.
     """
     output_path = config.meta["file_name"]
-    existing = load_existing_accessions(output_path)
+    header, existing = read_existing_output(output_path)
 
     if not existing:
         write_to_tsv(parsed, config)
@@ -254,7 +267,7 @@ def write_or_append_parsed(parsed: dict, config: Config) -> int:
     if skipped:
         print(f"  Skipping {skipped} versions already in {output_path}")
     if new_rows:
-        append_to_tsv(config.headers, new_rows, config.meta)
+        append_to_tsv(header or config.headers, new_rows, config.meta)
     return len(new_rows)
 
 

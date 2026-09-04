@@ -20,6 +20,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 TAB = "\t"
+NEWLINE = "\n"
 
 HISTORICAL_YAML = (
     Path(__file__).parent.parent / "configs" / "assembly_historical.types.yaml"
@@ -52,7 +53,7 @@ from flows.lib.assembly_versions_utils import (  # noqa: E402
     resolve_current_tsv_paths,
 )
 from flows.parsers.parse_backfill_historical_versions import (  # noqa: E402
-    load_existing_accessions,
+    read_existing_output,
     resolve_output_path,
     write_or_append_parsed,
 )
@@ -921,15 +922,41 @@ class TestNonDestructiveHistoricalWrite:
         assert written == 0
         assert len(read_tsv(tmp_path / "assembly_historical.tsv")) == 1
 
-    def test_load_existing_accessions_reads_the_accession_column(self, tmp_path):
+    def test_read_existing_output_reads_the_header_and_accessions(self, tmp_path):
         output = tmp_path / "assembly_historical.tsv"
         write_tsv(output, [self._row("GCA_000412225.1"), self._row("GCA_000412225.2")])
-        assert load_existing_accessions(str(output)) == {
-            "GCA_000412225.1", "GCA_000412225.2",
-        }
+        header, accessions = read_existing_output(str(output))
+        assert accessions == {"GCA_000412225.1", "GCA_000412225.2"}
+        assert header[0] == "genbankAccession"
 
-    def test_load_existing_accessions_on_an_absent_file(self, tmp_path):
-        assert load_existing_accessions(str(tmp_path / "nope.tsv")) == set()
+    def test_read_existing_output_on_an_absent_file(self, tmp_path):
+        assert read_existing_output(str(tmp_path / "nope.tsv")) == ([], set())
+
+    def test_appends_under_a_header_phase_1_has_widened(self, tmp_path):
+        # Phase 1 rewrites this file with the union of every row column, so a
+        # gap fill must append under what is on disk, not the config header.
+        config = self._config(tmp_path)
+        output = tmp_path / "assembly_historical.tsv"
+        write_or_append_parsed({"GCA_000412225.1": self._row("GCA_000412225.1")}, config)
+
+        rows = read_tsv(output)
+        widened = list(rows[0].keys()) + ["genusTaxId"]
+        rows[0]["genusTaxId"] = "8001"
+        with open(output, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=widened, delimiter=TAB)
+            writer.writeheader()
+            writer.writerows(rows)
+
+        write_or_append_parsed({"GCA_000222935.1": self._row("GCA_000222935.1")}, config)
+
+        with open(output, encoding="utf-8") as f:
+            lines = [line.rstrip(NEWLINE).split(TAB)
+                     for line in f if line.strip()]
+        # Every row spans the full widened header, so no column can slide.
+        assert {len(line) for line in lines} == {len(widened)}
+        appended = read_tsv(output)[-1]
+        assert appended["genbankAccession"] == "GCA_000222935.1"
+        assert appended["genusTaxId"] == ""
 
     def test_flow_routes_its_write_through_the_helper(self):
         source = Path(backfill_module.__file__).read_text(encoding="utf-8")

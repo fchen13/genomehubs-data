@@ -17,6 +17,7 @@ import os
 from collections import defaultdict
 
 from flows.lib.assembly_versions_utils import (
+    cell,
     get_accession,
     get_version_status,
     open_tsv,
@@ -31,13 +32,24 @@ from flows.lib.utils import load_config
 
 OUTPUT_TSV = "assembly_version_summary.tsv"
 
-# EBP metric columns to check (either naming convention may appear)
-EBP_METRIC_COLUMNS = {"ebpStandardDate", "ebp_standard_date", "ebpMetricDate", "ebp_metric_date"}
+# EBP metric columns to check (either naming convention may appear).  A
+# tuple, not a set: cell() takes them in precedence order.
+EBP_METRIC_COLUMNS = (
+    "ebpStandardDate",
+    "ebp_standard_date",
+    "ebpMetricDate",
+    "ebp_metric_date",
+)
 
 
 def _has_ebp_metric(row: dict) -> bool:
-    """Return True if any EBP metric date column is populated."""
-    return any(row.get(col) for col in EBP_METRIC_COLUMNS)
+    """Return True if any EBP metric date column is populated.
+
+    Read through ``cell`` so the literal string "None" counts as absent,
+    which is what Phase 3 does with the same column.  Reading it as a value
+    here would have the summary claim an EBP metric the milestones deny.
+    """
+    return bool(cell(row, *EBP_METRIC_COLUMNS))
 
 
 def load_assemblies(current_tsv: str, historical_tsv: str) -> list[dict]:
@@ -109,18 +121,24 @@ def generate_summary_for_base(base_accession: str, rows: list[dict]) -> dict:
 
     return {
         "base_accession": base_accession,
-        "taxId": first_row.get("taxId", ""),
+        "taxId": cell(first_row, "taxId", "taxid"),
         "first_version_accession": first_row["accession"],
         "first_version_number": versions[0],
-        "first_version_date": first_row.get("releaseDate", ""),
+        "first_version_date": cell(first_row, "releaseDate"),
         "current_version_accession": current_row["accession"],
         "current_version_number": versions[-1],
-        "current_version_date": current_row.get("releaseDate", ""),
+        "current_version_date": cell(current_row, "releaseDate"),
         "total_versions": len(rows),
         "superseded_versions": superseded_count,
-        "first_ebp_metric_accession": first_ebp_row["accession"] if first_ebp_row else "",
-        "first_ebp_metric_version": parse_accession(first_ebp_row["accession"])[1] if first_ebp_row else "",
-        "first_ebp_metric_date": first_ebp_row.get("releaseDate", "") if first_ebp_row else "",
+        "first_ebp_metric_accession": (
+            first_ebp_row["accession"] if first_ebp_row else ""
+        ),
+        "first_ebp_metric_version": (
+            parse_accession(first_ebp_row["accession"])[1] if first_ebp_row else ""
+        ),
+        "first_ebp_metric_date": (
+            cell(first_ebp_row, "releaseDate") if first_ebp_row else ""
+        ),
         "version_gaps": version_gaps,
     }
 
@@ -182,7 +200,7 @@ def generate_assembly_summary(
         )
         return
 
-    print(f"\n[2/3] Generating summaries...")
+    print("\n[2/3] Generating summaries...")
     by_base: dict[str, list[dict]] = defaultdict(list)
     for row in rows:
         acc = row.get("accession", "")
@@ -197,7 +215,7 @@ def generate_assembly_summary(
 
     print(f"  Processed {len(summaries)} unique base accessions")
 
-    print(f"\n[3/3] Writing output...")
+    print("\n[3/3] Writing output...")
     with open(output_tsv, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=SUMMARY_FIELDNAMES, delimiter="\t")
         writer.writeheader()

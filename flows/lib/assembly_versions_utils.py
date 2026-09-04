@@ -6,6 +6,7 @@ per-version metadata, read rows written by any phase, and resolve the
 current-assembly TSV paths from a loaded config rather than a hardcoded name.
 """
 
+import csv
 import glob as globmod
 import gzip
 import json
@@ -17,6 +18,13 @@ from typing import Callable, Optional
 from flows.lib import utils
 
 ACCESSION_PATTERN = re.compile(r"^GC[AF]_\d{9}\.\d+$")
+
+# Cell values that mean "no value".  Upstream writes the literal string
+# "None" wherever a field was absent when the row was formatted --
+# genomehubs' format_entry stringifies a bare None -- so every phase has to
+# read it as empty or it becomes a date, a taxid or a metric that is not
+# there.
+ABSENT_VALUES = frozenset({"", "None"})
 
 # Leading bytes of a gzip member, used to detect compression by content.
 GZIP_MAGIC = b"\x1f\x8b"
@@ -50,13 +58,29 @@ DERIVED_TSV_NAMES = frozenset({
 })
 
 
-def _first_present(row: dict, keys: tuple) -> str:
-    """Return the first non-empty value in ``row`` for any of ``keys``."""
+def cell(row: dict, *keys: str) -> str:
+    """Return the first populated cell in ``row`` among ``keys``.
+
+    Values in ABSENT_VALUES read as empty, so a column holding the literal
+    string "None" is treated the same as a column holding nothing.
+
+    Args:
+        row (dict): A TSV row.
+        *keys (str): Column names to try, in precedence order.
+
+    Returns:
+        str: The first populated value, stripped, or "" when there is none.
+    """
     for key in keys:
-        value = row.get(key)
-        if value:
+        value = str(row.get(key) or "").strip()
+        if value not in ABSENT_VALUES:
             return value
     return ""
+
+
+def _first_present(row: dict, keys: tuple) -> str:
+    """Return the first populated value in ``row`` for any of ``keys``."""
+    return cell(row, *keys)
 
 
 def get_accession(row: dict) -> str:
@@ -242,6 +266,38 @@ def parse_accession(accession: str) -> tuple[str, int]:
     """
     parts = accession.split(".")
     return parts[0], int(parts[1]) if len(parts) > 1 else 1
+
+
+def load_versions_by_base(tsv_path: str) -> dict[str, set[int]]:
+    """Index the assembly versions already present in a TSV by base accession.
+
+    Used against assembly_historical.tsv so the daily diff can tell a genuine
+    gap from one that a previous run — or the Phase 0 backfill — has already
+    parsed.  Only the accession column is read, so this stays cheap on a file
+    holding tens of thousands of rows, and it opens no network connections.
+
+    Args:
+        tsv_path (str): Path to a TSV written by any phase.
+
+    Returns:
+        dict: Mapping of base_accession -> set of version numbers present.
+            Empty when the file is absent or empty, which is the expected
+            state before the first backfill.
+    """
+    versions_by_base: dict[str, set[int]] = {}
+
+    if not os.path.exists(tsv_path) or os.path.getsize(tsv_path) == 0:
+        return versions_by_base
+
+    with open_tsv(tsv_path) as f:
+        for row in csv.DictReader(f, delimiter="\t"):
+            accession = get_accession(row)
+            if not accession:
+                continue
+            base_acc, version = parse_accession(accession)
+            versions_by_base.setdefault(base_acc, set()).add(version)
+
+    return versions_by_base
 
 
 def setup_cache_directories(work_dir: str) -> None:
