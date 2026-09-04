@@ -369,6 +369,27 @@ def merge_fieldnames(
     return ordered
 
 
+def merge_key(row: dict, index: int, origin: str) -> str:
+    """Return the identity a historical row is merged on.
+
+    The assembly ID is the intended key, and every row Phase 0 and Phase 1
+    write carries one.  A row that somehow lacks it falls back to its
+    accession, and then to a per-row sentinel: keying several ID-less rows on
+    the same empty string would collapse them into one and silently drop the
+    rest on the next rewrite.
+
+    Args:
+        row (dict): A historical TSV row.
+        index (int): Position of the row within its source.
+        origin (str): Which source the row came from, so sentinels minted for
+            the file and for the new rows cannot collide.
+
+    Returns:
+        str: The merge key.
+    """
+    return get_assembly_id(row) or get_accession(row) or f"{origin}:{index}"
+
+
 def append_superseded_to_tsv(
     newly_superseded: list[dict],
     historical_tsv: str,
@@ -407,12 +428,12 @@ def append_superseded_to_tsv(
     if historical_path.exists():
         with open_tsv(historical_tsv) as f:
             reader = csv.DictReader(f, delimiter=DELIMITER)
-            for row in reader:
-                existing[get_assembly_id(row)] = dict(row)
+            for index, row in enumerate(reader):
+                existing[merge_key(row, index, "file")] = dict(row)
             file_order = list(reader.fieldnames or [])
 
-    for row in newly_superseded:
-        existing[get_assembly_id(row)] = row
+    for index, row in enumerate(newly_superseded):
+        existing[merge_key(row, index, "new")] = row
 
     allowed = set(headers) | set(file_order) if headers else None
     fieldnames = merge_fieldnames(

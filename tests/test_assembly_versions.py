@@ -20,7 +20,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 TAB = "\t"
-NEWLINE = "\n"
 
 HISTORICAL_YAML = (
     Path(__file__).parent.parent / "configs" / "assembly_historical.types.yaml"
@@ -602,6 +601,34 @@ class TestAppendSupersededToTsv:
         tsv = tmp_path / "historical.tsv"
         append_superseded_to_tsv([], str(tsv))
         assert not tsv.exists()
+
+    def test_rows_without_an_assembly_id_are_not_collapsed(self, tmp_path):
+        # Keying several ID-less rows on the same empty string would keep one
+        # and drop the rest on the rewrite.
+        tsv = tmp_path / "historical.tsv"
+        write_tsv(tsv, [
+            self._make_row("GCA_000412225.1", ""),
+            self._make_row("GCA_000412225.2", ""),
+        ])
+        append_superseded_to_tsv(
+            [self._make_row("GCA_000222935.1", "GCA_000222935_1")], str(tsv)
+        )
+        result = read_tsv(tsv)
+        assert len(result) == 3
+        assert {row["genbankAccession"] for row in result} == {
+            "GCA_000412225.1", "GCA_000412225.2", "GCA_000222935.1",
+        }
+
+    def test_rows_with_neither_id_nor_accession_survive(self, tmp_path):
+        tsv = tmp_path / "historical.tsv"
+        write_tsv(tsv, [
+            {"genbankAccession": "", "assemblyID": "", "versionStatus": "superseded"},
+            {"genbankAccession": "", "assemblyID": "", "versionStatus": "current"},
+        ])
+        append_superseded_to_tsv(
+            [self._make_row("GCA_000222935.1", "GCA_000222935_1")], str(tsv)
+        )
+        assert len(read_tsv(tsv)) == 3
 
 
 # ---------------------------------------------------------------------------
@@ -1452,14 +1479,14 @@ class TestNonDestructiveHistoricalWrite:
         widened = list(rows[0].keys()) + ["genusTaxId"]
         rows[0]["genusTaxId"] = "8001"
         with open(output, "w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=widened, delimiter=TAB)
+            writer = csv.DictWriter(f, fieldnames=widened, delimiter="\t")
             writer.writeheader()
             writer.writerows(rows)
 
         write_or_append_parsed({"GCA_000222935.1": self._row("GCA_000222935.1")}, config)
 
         with open(output, encoding="utf-8") as f:
-            lines = [line.rstrip(NEWLINE).split(TAB)
+            lines = [line.rstrip("\n").split("\t")
                      for line in f if line.strip()]
         # Every row spans the full widened header, so no column can slide.
         assert {len(line) for line in lines} == {len(widened)}
