@@ -932,6 +932,27 @@ class TestNonDestructiveHistoricalWrite:
     def test_read_existing_output_on_an_absent_file(self, tmp_path):
         assert read_existing_output(str(tmp_path / "nope.tsv")) == ([], set())
 
+    def test_rows_without_an_accession_are_not_overwritten(self, tmp_path):
+        # read_existing_output only collects non-empty accessions, so a file
+        # whose rows all lack one yields an empty accession set.  The rewrite
+        # branch must key off the header instead, or those rows are lost.
+        config = self._config(tmp_path)
+        output = tmp_path / "assembly_historical.tsv"
+        write_tsv(output, [{
+            "genbankAccession": "",
+            "assemblyID": "GCA_000412225_1",
+            "versionStatus": "superseded",
+        }])
+
+        written = write_or_append_parsed(
+            {"GCA_000222935.1": self._row("GCA_000222935.1")}, config
+        )
+        rows = read_tsv(output)
+        assert written == 1
+        assert len(rows) == 2
+        assert rows[0]["assemblyID"] == "GCA_000412225_1"
+        assert rows[1]["genbankAccession"] == "GCA_000222935.1"
+
     def test_appends_under_a_header_phase_1_has_widened(self, tmp_path):
         # Phase 1 rewrites this file with the union of every row column, so a
         # gap fill must append under what is on disk, not the config header.

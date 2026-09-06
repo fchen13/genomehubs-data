@@ -201,6 +201,10 @@ def read_existing_output(output_path: str) -> tuple[list, set]:
     Only the header line and the accession column are kept, so this stays
     cheap on a file holding tens of thousands of rows.
 
+    The header doubles as the "this file already holds data" signal: it is
+    empty only when the file is missing or zero-length, whereas the accession
+    set is also empty for a file whose rows all lack an accession.
+
     The header matters as much as the accessions: the Phase 1 daily parser
     rewrites this file with the union of the columns across every row, so once
     it has appended a superseded row copied from the current TSV the file
@@ -236,7 +240,9 @@ def write_or_append_parsed(parsed: dict, config: Config) -> int:
     gap-fill path re-invokes this parser daily against a populated
     assembly_historical.tsv.  Write the whole file only when it does not exist
     yet — that branch produces the header line — and otherwise append the rows
-    that are not already present.
+    that are not already present.  The rewrite branch keys off the header
+    rather than the accession set, so a file whose rows all lack an accession
+    is appended to rather than overwritten.
 
     Deduplication is required because appending is not idempotent:
     find_all_assembly_versions re-parses every version below the current one,
@@ -256,7 +262,7 @@ def write_or_append_parsed(parsed: dict, config: Config) -> int:
     output_path = config.meta["file_name"]
     header, existing = read_existing_output(output_path)
 
-    if not existing:
+    if not header:
         write_to_tsv(parsed, config)
         return len(parsed)
 
@@ -267,7 +273,7 @@ def write_or_append_parsed(parsed: dict, config: Config) -> int:
     if skipped:
         print(f"  Skipping {skipped} versions already in {output_path}")
     if new_rows:
-        append_to_tsv(header or config.headers, new_rows, config.meta)
+        append_to_tsv(header, new_rows, config.meta)
     return len(new_rows)
 
 
