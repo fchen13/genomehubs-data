@@ -41,16 +41,19 @@ from flows.parsers.parse_assembly_versions import (  # noqa: E402
     build_superseded_row,
     derive_assembly_version_paths,
     identify_newly_superseded,
+    load_historical_headers,
     load_previous_parsed_by_base,
     merge_fieldnames,
     parse_assembly_versions,
 )
 from flows.lib.assembly_versions_utils import (  # noqa: E402
+    canonicalize_columns,
     get_accession,
     get_assembly_id,
     get_version_status,
     open_tsv,
     resolve_current_tsv_paths,
+    resolve_historical_yaml_path,
 )
 from flows.parsers.parse_backfill_historical_versions import (  # noqa: E402
     read_existing_output,
@@ -837,6 +840,156 @@ class TestSchemaConformance:
             written = next(csv.reader(f, delimiter=TAB))
         assert set(written) <= set(headers)
         assert written == list(headers)
+
+
+# ---------------------------------------------------------------------------
+# TestCurrentSchemaDoesNotLeakIntoHistorical
+# ---------------------------------------------------------------------------
+
+class TestCurrentSchemaDoesNotLeakIntoHistorical:
+    """A Phase 1 row is copied from the current TSV, whose schema is not ours.
+
+    Left unbounded, every current-only column — upstream's `assemblyId` spelling
+    among them — lands in assembly_historical.tsv despite the YAML never
+    declaring it.
+    """
+
+    @staticmethod
+    def _yaml_headers():
+        return list(load_config(config_file=str(HISTORICAL_YAML)).headers)
+
+    @staticmethod
+    def _current_row():
+        """A row as the current TSV spells it, extra columns and all."""
+        return {
+            "genbankAccession": "GCA_000222935.1",
+            "assemblyId": "GCA_000222935_1",
+            "versionStatus": "current",
+            "releaseDate": "2011-06-01",
+            "sourceDatabase": "SOURCE_DATABASE_GENBANK",
+        }
+
+    def test_canonicalize_columns_drops_the_alias_spelling(self):
+        row = canonicalize_columns(
+            {"assemblyId": "GCA_000222935_1", "version_status": "current"}
+        )
+        assert row == {
+            "assemblyID": "GCA_000222935_1", "versionStatus": "current",
+        }
+
+    def test_canonicalize_columns_prefers_the_canonical_value(self):
+        row = canonicalize_columns(
+            {"assemblyID": "canonical", "assemblyId": "stale"}
+        )
+        assert row["assemblyID"] == "canonical"
+        assert "assemblyId" not in row
+
+    def test_canonicalize_columns_invents_nothing(self):
+        assert canonicalize_columns({"releaseDate": "2011-06-01"}) == {
+            "releaseDate": "2011-06-01"
+        }
+
+    def test_superseded_row_carries_one_assembly_id_column(self):
+        row = build_superseded_row(
+            self._current_row(), 1, "GCA_000222935.2", 2, "2024-01-15"
+        )
+        assert row["assemblyID"] == "GCA_000222935_1"
+        assert "assemblyId" not in row
+
+    def test_undeclared_columns_are_not_written(self, tmp_path):
+        tsv = tmp_path / "historical.tsv"
+        row = build_superseded_row(
+            self._current_row(), 1, "GCA_000222935.2", 2, "2024-01-15"
+        )
+        append_superseded_to_tsv([row], str(tsv), headers=self._yaml_headers())
+        with open(tsv, encoding="utf-8") as f:
+            written = next(csv.reader(f, delimiter=TAB))
+        assert set(written) <= set(self._yaml_headers())
+        assert "sourceDatabase" not in written
+        assert read_tsv(tsv)[0]["assemblyID"] == "GCA_000222935_1"
+
+    def test_columns_already_on_disk_are_kept(self, tmp_path):
+        # The schema bounds what a new row may add; it must not evict a column
+        # an earlier run already put in the file (F3).
+        tsv = tmp_path / "historical.tsv"
+        write_tsv(tsv, [{
+            "genbankAccession": "GCA_000412225.1",
+            "assemblyID": "GCA_000412225_1",
+            "legacyColumn": "keep me",
+        }])
+        row = build_superseded_row(
+            self._current_row(), 1, "GCA_000222935.2", 2, "2024-01-15"
+        )
+        append_superseded_to_tsv([row], str(tsv), headers=self._yaml_headers())
+        result = read_tsv(tsv)
+        by_accession = {r["genbankAccession"]: r for r in result}
+        assert by_accession["GCA_000412225.1"]["legacyColumn"] == "keep me"
+        assert "sourceDatabase" not in by_accession["GCA_000222935.1"]
+
+    def test_without_headers_the_union_is_still_taken(self, tmp_path):
+        # No schema resolved means no bound — the pre-existing behaviour.
+        tsv = tmp_path / "historical.tsv"
+        row = build_superseded_row(
+            self._current_row(), 1, "GCA_000222935.2", 2, "2024-01-15"
+        )
+        append_superseded_to_tsv([row], str(tsv))
+        with open(tsv, encoding="utf-8") as f:
+            written = next(csv.reader(f, delimiter=TAB))
+        assert "sourceDatabase" in written
+
+    def test_merge_fieldnames_honours_allowed(self):
+        assert merge_fieldnames(
+            [{"a": 1, "b": 2}], ["a", "b"], allowed={"a"}
+        ) == ["a"]
+
+
+# ---------------------------------------------------------------------------
+# TestHistoricalHeadersAreResolved
+# ---------------------------------------------------------------------------
+
+class TestHistoricalHeadersAreResolved:
+    """The entry points must actually supply the schema, or it bounds nothing."""
+
+    def test_repo_config_is_found_from_an_unrelated_work_dir(self, tmp_path):
+        assert resolve_historical_yaml_path(str(tmp_path)) == str(HISTORICAL_YAML)
+
+    def test_a_copy_in_work_dir_wins(self, tmp_path):
+        local = tmp_path / "assembly_historical.types.yaml"
+        local.write_text(HISTORICAL_YAML.read_text(encoding="utf-8"), encoding="utf-8")
+        assert resolve_historical_yaml_path(str(tmp_path)) == str(local)
+
+    def test_headers_load_from_the_repo_config(self, tmp_path):
+        headers = load_historical_headers(str(tmp_path))
+        assert headers == list(load_config(config_file=str(HISTORICAL_YAML)).headers)
+
+    def test_an_unloadable_yaml_degrades_to_none(self, tmp_path):
+        broken = tmp_path / "assembly_historical.types.yaml"
+        broken.write_text("this: [is not: valid", encoding="utf-8")
+        assert load_historical_headers(str(tmp_path)) is None
+
+    def test_a_missing_config_degrades_to_none(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            incremental_module, "resolve_historical_yaml_path", lambda _: None
+        )
+        assert load_historical_headers(str(tmp_path)) is None
+
+    def test_the_wrapper_passes_the_headers_through(self, tmp_path, monkeypatch):
+        (tmp_path / "report.jsonl").write_text("", encoding="utf-8")
+        captured = {}
+
+        def fake_parse(**kwargs):
+            captured.update(kwargs)
+            return {"missing_versions_count": 0, "missing_versions": []}
+
+        monkeypatch.setattr(
+            incremental_module, "parse_assembly_versions", fake_parse
+        )
+        incremental_module.parse_assembly_versions_wrapper(
+            working_yaml="", work_dir=str(tmp_path), append=False
+        )
+        assert captured["historical_headers"] == list(
+            load_config(config_file=str(HISTORICAL_YAML)).headers
+        )
 
 
 # ---------------------------------------------------------------------------

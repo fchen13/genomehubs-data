@@ -47,9 +47,23 @@ ACCESSION_ALIASES = (COL_ACCESSION, "accession")
 ASSEMBLY_ID_ALIASES = (COL_ASSEMBLY_ID, "assemblyId", "assembly_id")
 VERSION_STATUS_ALIASES = (COL_VERSION_STATUS, "version_status")
 
+# Every aliased field, canonical spelling first.  canonicalize_columns walks
+# this to collapse a row onto the spellings the YAML declares.
+ALIASES_BY_CANONICAL = (
+    ACCESSION_ALIASES,
+    ASSEMBLY_ID_ALIASES,
+    VERSION_STATUS_ALIASES,
+)
+
 # Filename of the historical TSV, and the outputs derived from it.  Used to
 # exclude the pipeline's own products when discovering the current TSV.
 HISTORICAL_TSV_NAME = "assembly_historical.tsv"
+HISTORICAL_YAML_NAME = "assembly_historical.types.yaml"
+# configs/ sits beside flows/ in the repo, and holds the historical schema.
+REPO_CONFIG_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    "configs",
+)
 CURRENT_TSV_DEFAULT = "assembly_current.tsv"
 DERIVED_TSV_NAMES = frozenset({
     HISTORICAL_TSV_NAME,
@@ -124,6 +138,36 @@ def get_version_status(row: dict) -> str:
         str: The version status, or "" when absent.
     """
     return _first_present(row, VERSION_STATUS_ALIASES)
+
+
+def canonicalize_columns(row: dict) -> dict:
+    """Return a copy of ``row`` with each alias spelling folded onto its column.
+
+    Reads tolerate the alias spellings, but a row about to be *written* to the
+    historical TSV must carry one column per field.  A row copied from the
+    current TSV otherwise arrives holding upstream's ``assemblyId`` alongside
+    the ``assemblyID`` the caller sets, and the merged output then has two
+    assembly-ID columns disagreeing about the same assembly — only one of
+    which the historical YAML declares.
+
+    Only fields the row actually has are touched, so this never invents an
+    empty column for a field the row never carried.
+
+    Args:
+        row (dict): A TSV row, possibly using alias spellings.
+
+    Returns:
+        dict: A copy holding only the canonical spelling of each aliased field.
+    """
+    canonical_row = dict(row)
+    for aliases in ALIASES_BY_CANONICAL:
+        if not any(alias in row for alias in aliases):
+            continue
+        value = _first_present(row, aliases)
+        for alias in aliases[1:]:
+            canonical_row.pop(alias, None)
+        canonical_row[aliases[0]] = value
+    return canonical_row
 
 
 def is_gzipped(path: str) -> bool:
@@ -240,6 +284,27 @@ def resolve_historical_tsv_path(work_dir: str) -> str:
         str: Path to assembly_historical.tsv.
     """
     return os.path.join(work_dir, HISTORICAL_TSV_NAME)
+
+
+def resolve_historical_yaml_path(work_dir: str) -> Optional[str]:
+    """Locate assembly_historical.types.yaml, or None when it is not found.
+
+    The pipeline copies a parser's YAML into work_dir, so look there first and
+    fall back to the copy in the repo's configs/ directory.  Returning None
+    rather than raising keeps the schema an optimisation: the caller falls
+    back to the column order already on disk.
+
+    Args:
+        work_dir (str): Directory holding the pipeline files.
+
+    Returns:
+        str or None: Path to the historical types YAML.
+    """
+    candidates = [
+        os.path.join(work_dir, HISTORICAL_YAML_NAME),
+        os.path.join(REPO_CONFIG_DIR, HISTORICAL_YAML_NAME),
+    ]
+    return next((path for path in candidates if os.path.exists(path)), None)
 
 
 def parse_version(accession: str) -> int:

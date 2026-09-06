@@ -206,10 +206,12 @@ def read_existing_output(output_path: str) -> tuple[list, set]:
     set is also empty for a file whose rows all lack an accession.
 
     The header matters as much as the accessions: the Phase 1 daily parser
-    rewrites this file with the union of the columns across every row, so once
-    it has appended a superseded row copied from the current TSV the file
-    carries columns the historical config never declared.  Appending against
-    the config header would then write rows a few columns short.
+    rewrites this file with the union of the columns across every row, so the
+    order on disk is its output, not this config's.  Phase 1 now bounds that
+    union by the declared schema where it can resolve the YAML, but a file
+    widened by an earlier run — or by a run that could not — still carries
+    columns the config never declared.  Appending against the config header
+    would then write rows a few columns short.
 
     Args:
         output_path (str): Path to assembly_historical.tsv.

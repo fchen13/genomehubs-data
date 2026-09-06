@@ -22,12 +22,15 @@ from flows.lib.assembly_versions_utils import (
     COL_SUPERSEDED_BY_VERSION,
     COL_SUPERSEDED_DATE,
     COL_VERSION_STATUS,
+    HISTORICAL_YAML_NAME,
+    canonicalize_columns,
     get_accession,
     get_assembly_id,
     open_tsv,
     parse_accession,
     resolve_current_tsv_paths,
     resolve_historical_tsv_path,
+    resolve_historical_yaml_path,
 )
 from flows.lib.conditional_import import flow
 from flows.lib.shared_args import INPUT_PATH, YAML_PATH
@@ -117,14 +120,17 @@ def build_superseded_row(
 
     Emits the canonical camelCase column names declared in
     assembly_historical.types.yaml, so Phase 1 rows are indistinguishable
-    from Phase 0 rows in the historical TSV.
+    from Phase 0 rows in the historical TSV.  The copied row is canonicalized
+    first: it comes from the current TSV, which spells the assembly ID
+    ``assemblyId``, and leaving that alongside the ``assemblyID`` set here
+    would put two disagreeing assembly-ID columns into the output.
 
     Returns:
         dict: Updated row with versionStatus, assemblyID and the three
             supersession columns set.
     """
     base_acc, _ = parse_accession(get_accession(previous_row))
-    row = previous_row.copy()
+    row = canonicalize_columns(previous_row)
     row[COL_VERSION_STATUS] = "superseded"
     row[COL_ASSEMBLY_ID] = f"{base_acc}_{previous_version}"
     row[COL_SUPERSEDED_BY] = new_accession
@@ -220,7 +226,9 @@ def identify_newly_superseded(
 
 
 def merge_fieldnames(
-    rows: list[dict], preferred_order: Optional[list[str]] = None
+    rows: list[dict],
+    preferred_order: Optional[list[str]] = None,
+    allowed: Optional[set] = None,
 ) -> list[str]:
     """Build an output header covering every key present in any row.
 
@@ -233,6 +241,9 @@ def merge_fieldnames(
         rows (list): All row dicts destined for the output file.
         preferred_order (list, optional): Column order to honour where
             possible.
+        allowed (set, optional): Columns permitted in the output.  Keys
+            outside it are dropped.  Defaults to no restriction, which keeps
+            the union whole.
 
     Returns:
         list: Ordered fieldnames covering the union of all row keys.
@@ -240,7 +251,8 @@ def merge_fieldnames(
     union: dict[str, None] = {}
     for row in rows:
         for key in row:
-            union.setdefault(key, None)
+            if allowed is None or key in allowed:
+                union.setdefault(key, None)
 
     order = list(preferred_order or [])
     ordered = [col for col in order if col in union]
@@ -260,12 +272,20 @@ def append_superseded_to_tsv(
     The output header is the union of the columns across all rows, so merging
     Phase 0 and Phase 1 row sets cannot silently drop a column.
 
+    When headers are supplied they also bound the schema: a new row is written
+    under the declared columns plus whatever is already on disk, and nothing
+    else.  Phase 1 rows are copied wholesale from the current TSV, whose
+    schema is upstream's rather than this one, so without that bound every
+    current-only column leaks into the historical TSV.  Columns already in the
+    file stay in it either way — F3 is about never dropping those.
+
     Args:
         newly_superseded (list): Row dicts from identify_newly_superseded.
         historical_tsv (str): Path to assembly_historical.tsv.
-        headers (list, optional): Preferred column order, e.g.
-            config.headers from assembly_historical.types.yaml.  Defaults to
-            the order already present in the file on disk.
+        headers (list, optional): The declared schema, i.e. config.headers
+            from assembly_historical.types.yaml.  Sets both the column order
+            and the bound above.  Defaults to the order already present in the
+            file on disk, unbounded.
     """
     if not newly_superseded:
         print("  No newly superseded versions to add.")
@@ -285,8 +305,9 @@ def append_superseded_to_tsv(
     for row in newly_superseded:
         existing[get_assembly_id(row)] = row
 
+    allowed = set(headers) | set(file_order) if headers else None
     fieldnames = merge_fieldnames(
-        list(existing.values()), headers or file_order
+        list(existing.values()), headers or file_order, allowed=allowed
     )
     with open(historical_tsv, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(
@@ -430,6 +451,35 @@ def load_assembly_versions_config(working_yaml: Optional[str]) -> Optional[Confi
         return None
 
 
+def load_historical_headers(work_dir: str) -> Optional[list[str]]:
+    """Load the declared historical schema, returning None when unavailable.
+
+    The headers set the column order of assembly_historical.tsv and bound
+    which columns a Phase 1 row may contribute, so that a row copied from the
+    current TSV cannot widen the file with upstream-only columns.  Every
+    failure degrades to None — the file is then written in the order already
+    on disk, exactly as before — because a missing schema is not a reason to
+    fail a daily run.
+
+    Args:
+        work_dir (str): Directory holding the pipeline files.
+
+    Returns:
+        list or None: Declared column order from the historical types YAML.
+    """
+    yaml_path = resolve_historical_yaml_path(work_dir)
+    if not yaml_path:
+        print(f"  Note: {HISTORICAL_YAML_NAME} not found;")
+        print("  using the column order already on disk.")
+        return None
+    try:
+        return list(load_config(config_file=yaml_path).headers)
+    except Exception as e:
+        print(f"  Warning: could not load {yaml_path} ({e});")
+        print("  using the column order already on disk.")
+        return None
+
+
 def parse_assembly_versions_wrapper(
     working_yaml: str,
     work_dir: str,
@@ -468,6 +518,7 @@ def parse_assembly_versions_wrapper(
         new_jsonl=paths[0],
         previous_tsv=previous_tsv,
         historical_tsv=historical_tsv,
+        historical_headers=load_historical_headers(work_dir),
     )
 
     if results["missing_versions_count"] > 0:
@@ -499,6 +550,9 @@ if __name__ == "__main__":
         new_jsonl=args.input_path,
         previous_tsv=previous_tsv,
         historical_tsv=historical_tsv,
+        historical_headers=load_historical_headers(
+            os.path.dirname(os.path.abspath(historical_tsv))
+        ),
     )
     print(f"Summary: superseded={results['newly_superseded_count']}, "
           f"missing={results['missing_versions_count']}")
