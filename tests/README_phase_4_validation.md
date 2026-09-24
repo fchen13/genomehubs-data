@@ -42,12 +42,13 @@ python -m tests.validate_pipeline --work_dir tmp --yaml_path <config> --strict
 
 It resolves the current-TSV filename the same way the flows do — from
 `config.meta["file_name"]` when `--yaml_path` is given, by discovery in `work_dir`
-otherwise — then loads all four outputs and runs nine checks:
+otherwise — then loads all four outputs and runs eleven checks:
 
 | Check | Assertion |
 |---|---|
 | `outputs-present` | all four TSVs exist |
 | `assembly-id-uniqueness` | no assembly ID appears twice across current + historical, and no row lacks one |
+| `historical-id-agreement` | each historical row's assembly ID names its own accession — a paired GCF record once got its RefSeq versions filed under the GCA it pairs with |
 | `version-gaps` | each summary `version_gaps` matches the versions actually present for that base |
 | `referential-integrity` | every `superseded_by` resolves to a known accession of the same base |
 | `summary-completeness` | every base accession is summarised, and no summary row is stale |

@@ -12,7 +12,8 @@ other rather than against a mock:
 Checks, one per success metric in the Phase 4 plan:
 
     assembly-id-uniqueness   assemblyID unique across current + historical
-    version-gaps             summary version_gaps matches the versions present
+    historical-id-agreement  each historical assemblyID names its own accession
+    version-gaps            summary version_gaps matches the versions present
     referential-integrity    every superseded_by resolves to a known accession
     summary-completeness     every base accession is summarised, and no more
     milestone-date-ordering  the nested milestone dates never invert
@@ -284,6 +285,35 @@ def check_assembly_id_coverage(
     return problems
 
 
+def check_historical_id_agreement(historical_rows: list[dict]) -> list[str]:
+    """Check each historical row's assembly ID names the version it holds.
+
+    Phase 0 and Phase 1 both mint the ID as ``{base}_{version}`` from the
+    accession they are recording.  A row whose ID and accession disagree was
+    built from one assembly and filed under another -- which is what the
+    backfill did to a paired GCF record, parsing RefSeq versions and writing
+    each under the GCA it pairs with.
+
+    Args:
+        historical_rows (list): Rows from the historical TSV.
+
+    Returns:
+        list: One problem per row whose ID names another assembly.
+    """
+    problems = []
+    for row in historical_rows:
+        assembly_id = get_assembly_id(row)
+        accession = get_accession(row)
+        if not assembly_id or not accession:
+            continue
+        base, version = parse_accession(accession)
+        if assembly_id != f"{base}_{version}":
+            problems.append(
+                f"{accession}: assembly ID {assembly_id} names another assembly"
+            )
+    return problems
+
+
 def check_version_gaps(
     assembly_rows: list[dict], summary_rows: list[dict]
 ) -> list[str]:
@@ -533,6 +563,11 @@ def run_checks(outputs: dict) -> list[dict]:
                 "name": "assembly-id-coverage",
                 "severity": NOTE,
                 "problems": check_assembly_id_coverage(current_rows, historical_rows),
+            },
+            {
+                "name": "historical-id-agreement",
+                "severity": ERROR,
+                "problems": check_historical_id_agreement(historical_rows),
             },
             {
                 "name": "version-gaps",

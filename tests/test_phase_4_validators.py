@@ -188,6 +188,26 @@ class TestAssemblyIdUniqueness:
         assert validator.check_assembly_ids_unique(current, historical)
 
 
+class TestHistoricalIdAgreement:
+    def test_a_refseq_version_filed_under_its_genbank_pair(self, work_dir):
+        # What the backfill wrote for a paired GCF record: GCF_X.2 parsed,
+        # minted GCF_X_2, and filed under the GCA_X.1 it pairs with.
+        rows = read_tsv(work_dir / "assembly_historical.tsv")
+        rows[0]["assemblyID"] = rows[0]["genbankAccession"].replace(
+            "GCA_", "GCF_"
+        ).replace(".1", "_2")
+        write_tsv(work_dir / "assembly_historical.tsv", rows, ASSEMBLY_COLUMNS)
+        assert "historical-id-agreement" in failing(run(work_dir))
+
+    def test_agreeing_rows_pass(self):
+        rows = [{"genbankAccession": "GCA_1.2", "assemblyID": "GCA_1_2"}]
+        assert validator.check_historical_id_agreement(rows) == []
+
+    def test_a_row_without_an_id_is_left_to_assembly_id_coverage(self):
+        rows = [{"genbankAccession": "GCA_1.2"}]
+        assert validator.check_historical_id_agreement(rows) == []
+
+
 class TestVersionGaps:
     def test_summary_gap_field_must_match_the_versions_present(self, work_dir):
         rows = read_tsv(work_dir / "assembly_version_summary.tsv")
